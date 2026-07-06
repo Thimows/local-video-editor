@@ -654,6 +654,11 @@ function InspectorPanel({
 }) {
   const duration = getProjectDuration(project)
   const missingSavedHandles = missingAssets.filter((asset) => asset.fileHandle)
+  const sessionOnlyAssets = project.sourceAssets.filter(
+    (asset) =>
+      !asset.fileHandle &&
+      !missingAssets.some((missing) => missing.id === asset.id)
+  )
 
   return (
     <aside className="flex min-h-0 flex-col overflow-y-auto border-r bg-muted/25 p-3">
@@ -785,11 +790,28 @@ function InspectorPanel({
                 <ReconnectButton
                   key={asset.id}
                   asset={asset}
+                  connected={false}
                   onReconnect={onReconnect}
                 />
               ))}
             </div>
           )}
+          {sessionOnlyAssets.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                These files are connected now but will not survive refresh until
+                you reconnect them persistently.
+              </p>
+              {sessionOnlyAssets.map((asset) => (
+                <ReconnectButton
+                  key={asset.id}
+                  asset={asset}
+                  connected
+                  onReconnect={onReconnect}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <Separator />
@@ -842,8 +864,10 @@ function InspectorPanel({
 function ReconnectButton({
   asset,
   onReconnect,
+  connected,
 }: {
   asset: SourceAsset
+  connected?: boolean
   onReconnect: (
     assetId: string,
     file: File,
@@ -871,7 +895,9 @@ function ReconnectButton({
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
-          {formatBytes(asset.sizeBytes)}
+          {formatBytes(asset.sizeBytes)} ·{" "}
+          {asset.fileHandle ? "persistent handle saved" : "temporary file only"}{" "}
+          · {connected ? "connected" : "missing"}
         </p>
       </div>
       <input
@@ -924,9 +950,11 @@ function PreviewStage({
   onPlayheadChange: (seconds: number) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
   const [previewIssue, setPreviewIssue] = useState<string | null>(null)
+  const [previewInfo, setPreviewInfo] = useState("No video connected")
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -988,7 +1016,9 @@ function PreviewStage({
         )
       } else {
         setPreviewIssue(null)
+        drawPreviewFrame(player, canvasRef.current)
       }
+      setPreviewInfo(getVideoDebugInfo(player))
     }
 
     syncVideo().catch(() => undefined)
@@ -1045,6 +1075,8 @@ function PreviewStage({
             ? "The audio can play, but this browser is not exposing a decodable video track for this file."
             : null
         )
+        drawPreviewFrame(player, canvasRef.current)
+        setPreviewInfo(getVideoDebugInfo(player))
         await player.play().catch(() => undefined)
       } else {
         player.pause()
@@ -1064,6 +1096,7 @@ function PreviewStage({
       }
 
       const now = performance.now()
+      drawPreviewFrame(player, canvasRef.current)
 
       if (now - lastTimelineUpdate > 33) {
         lastTimelineUpdate = now
@@ -1102,10 +1135,16 @@ function PreviewStage({
         <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-lg border bg-black">
           {runtimeAsset ? (
             <>
+              <canvas
+                ref={canvasRef}
+                className="h-full w-full bg-black"
+                width={1920}
+                height={1080}
+              />
               <video
                 ref={videoRef}
                 src={runtimeAsset.objectUrl}
-                className="h-full w-full object-contain"
+                className="pointer-events-none absolute top-2 left-2 size-1 opacity-0"
                 playsInline
                 preload="auto"
                 onError={() =>
@@ -1120,8 +1159,13 @@ function PreviewStage({
                       ? "The audio can play, but this browser is not exposing a decodable video track for this file."
                       : null
                   )
+                  setPreviewInfo(getVideoDebugInfo(video))
+                  drawPreviewFrame(video, canvasRef.current)
                 }}
               />
+              <div className="absolute top-3 left-3 rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] text-white/75">
+                {previewInfo}
+              </div>
               {previewIssue ? (
                 <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
                   {previewIssue}
@@ -1712,6 +1756,43 @@ function waitForVideoSeek(video: HTMLVideoElement) {
     video.addEventListener("seeked", onSeeked, { once: true })
     video.addEventListener("error", onError, { once: true })
   })
+}
+
+function drawPreviewFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement | null
+) {
+  if (!canvas || video.videoWidth <= 0 || video.videoHeight <= 0) {
+    return
+  }
+
+  const context = canvas.getContext("2d")
+
+  if (!context) {
+    return
+  }
+
+  context.fillStyle = "#000"
+  context.fillRect(0, 0, canvas.width, canvas.height)
+
+  const videoRatio = video.videoWidth / video.videoHeight
+  const canvasRatio = canvas.width / canvas.height
+  const drawWidth =
+    videoRatio > canvasRatio ? canvas.width : canvas.height * videoRatio
+  const drawHeight =
+    videoRatio > canvasRatio ? canvas.width / videoRatio : canvas.height
+  const x = (canvas.width - drawWidth) / 2
+  const y = (canvas.height - drawHeight) / 2
+
+  context.drawImage(video, x, y, drawWidth, drawHeight)
+}
+
+function getVideoDebugInfo(video: HTMLVideoElement) {
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+    return `no video frame · ready ${video.readyState}`
+  }
+
+  return `${video.videoWidth}x${video.videoHeight} · ready ${video.readyState}`
 }
 
 function getTimelineSeconds(
