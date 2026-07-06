@@ -55,19 +55,7 @@ export async function chooseLocalFiles(accept: string) {
   if (showOpenFilePicker) {
     const handles = await showOpenFilePicker({
       multiple: true,
-      types: [
-        {
-          description: accept.includes("video") ? "Media files" : "Audio files",
-          accept: accept.includes("video")
-            ? {
-                "video/*": [".mp4", ".mov", ".m4v", ".webm"],
-                "audio/*": [".mp3", ".m4a", ".wav", ".webm", ".ogg"],
-              }
-            : {
-                "audio/*": [".mp3", ".m4a", ".wav", ".webm", ".ogg"],
-              },
-        },
-      ],
+      types: [getPickerType(accept)],
     })
 
     return Promise.all(
@@ -79,6 +67,34 @@ export async function chooseLocalFiles(accept: string) {
   }
 
   return []
+}
+
+function getPickerType(accept: string): FilePickerAcceptType {
+  if (accept.includes("video") && accept.includes("audio")) {
+    return {
+      description: "Media files",
+      accept: {
+        "video/*": [".mp4", ".mov", ".m4v", ".webm"],
+        "audio/*": [".mp3", ".m4a", ".wav", ".webm", ".ogg"],
+      },
+    }
+  }
+
+  if (accept.includes("video")) {
+    return {
+      description: "Video files",
+      accept: {
+        "video/*": [".mp4", ".mov", ".m4v", ".webm"],
+      },
+    }
+  }
+
+  return {
+    description: "Audio files",
+    accept: {
+      "audio/*": [".mp3", ".m4a", ".wav", ".webm", ".ogg"],
+    },
+  }
 }
 
 export async function getDroppedLocalFiles(dataTransfer: DataTransfer) {

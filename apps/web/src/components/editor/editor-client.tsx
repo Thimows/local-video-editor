@@ -270,12 +270,21 @@ export function EditorClient() {
       updatedAt: Date.now(),
     })
     setStatus(
-      `Imported ${importedAssets.length} local file${importedAssets.length === 1 ? "" : "s"}`
+      `Imported ${importedAssets.length} local file${
+        importedAssets.length === 1 ? "" : "s"
+      }${
+        importedAssets.every((asset) => asset.fileHandle)
+          ? " with persistent handles"
+          : ". Some files need persistent reconnect for reload restore"
+      }`
     )
   }
 
   async function importWithPicker() {
     if (!("showOpenFilePicker" in window)) {
+      setStatus(
+        "This browser import path cannot persist file access after refresh"
+      )
       document.getElementById("media-import")?.click()
       return
     }
@@ -378,7 +387,11 @@ export function EditorClient() {
     setStatus("Clip split locally")
   }
 
-  async function reconnectAsset(assetId: string, file: File) {
+  async function reconnectAsset(
+    assetId: string,
+    file: File,
+    fileHandle?: FileSystemFileHandle
+  ) {
     if (!project) {
       return
     }
@@ -397,7 +410,23 @@ export function EditorClient() {
     setRuntimeAssets((current) =>
       mergeRuntimeAssets(current, { [assetId]: createRuntimeAsset(file) })
     )
-    setStatus(`Reconnected ${asset.name}`)
+    setProject({
+      ...project,
+      sourceAssets: project.sourceAssets.map((item) =>
+        item.id === assetId
+          ? {
+              ...item,
+              fileHandle: fileHandle ?? item.fileHandle,
+            }
+          : item
+      ),
+      updatedAt: Date.now(),
+    })
+    setStatus(
+      `Reconnected ${asset.name}${
+        fileHandle ? " with persistent access" : " for this session"
+      }`
+    )
   }
 
   async function restoreSavedAccess() {
@@ -815,9 +844,27 @@ function ReconnectButton({
   onReconnect,
 }: {
   asset: SourceAsset
-  onReconnect: (assetId: string, file: File) => void
+  onReconnect: (
+    assetId: string,
+    file: File,
+    fileHandle?: FileSystemFileHandle
+  ) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+
+  async function reconnectWithPersistentPicker() {
+    const accept = asset.type === "video" ? "video" : "audio"
+    const selected = await chooseLocalFiles(accept).catch(() => [])
+    const match =
+      selected.find((item) => item.file.name === asset.name) ?? selected[0]
+
+    if (match) {
+      onReconnect(asset.id, match.file, match.fileHandle)
+      return
+    }
+
+    inputRef.current?.click()
+  }
 
   return (
     <div className="flex items-center gap-2 rounded-md border bg-background p-2">
@@ -844,7 +891,13 @@ function ReconnectButton({
       <Button
         size="icon-sm"
         variant="outline"
-        onClick={() => inputRef.current?.click()}
+        onClick={() => {
+          if ("showOpenFilePicker" in window) {
+            reconnectWithPersistentPicker()
+          } else {
+            inputRef.current?.click()
+          }
+        }}
         aria-label={`Reconnect ${asset.name}`}
       >
         <FolderOpen />
@@ -873,6 +926,7 @@ function PreviewStage({
   const videoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
+  const [previewIssue, setPreviewIssue] = useState<string | null>(null)
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -925,6 +979,15 @@ function PreviewStage({
 
       if (Number.isFinite(targetTime)) {
         player.currentTime = targetTime
+        await waitForVideoSeek(player)
+      }
+
+      if (player.videoWidth === 0 || player.videoHeight === 0) {
+        setPreviewIssue(
+          "The audio can play, but this browser is not exposing a decodable video track for this file."
+        )
+      } else {
+        setPreviewIssue(null)
       }
     }
 
@@ -976,6 +1039,12 @@ function PreviewStage({
 
         player.volume = clip.muted ? 0 : clip.volume
         player.currentTime = getSourceTimeForPlayhead(clip, playheadRef.current)
+        await waitForVideoSeek(player)
+        setPreviewIssue(
+          player.videoWidth === 0 || player.videoHeight === 0
+            ? "The audio can play, but this browser is not exposing a decodable video track for this file."
+            : null
+        )
         await player.play().catch(() => undefined)
       } else {
         player.pause()
@@ -1032,11 +1101,33 @@ function PreviewStage({
       <div className="grid place-items-center p-4">
         <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-lg border bg-black">
           {runtimeAsset ? (
-            <video
-              ref={videoRef}
-              className="h-full w-full object-contain"
-              playsInline
-            />
+            <>
+              <video
+                ref={videoRef}
+                src={runtimeAsset.objectUrl}
+                className="h-full w-full object-contain"
+                playsInline
+                preload="auto"
+                onError={() =>
+                  setPreviewIssue(
+                    "This browser could not decode the selected video file."
+                  )
+                }
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget
+                  setPreviewIssue(
+                    video.videoWidth === 0 || video.videoHeight === 0
+                      ? "The audio can play, but this browser is not exposing a decodable video track for this file."
+                      : null
+                  )
+                }}
+              />
+              {previewIssue ? (
+                <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
+                  {previewIssue}
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="grid h-full place-items-center text-center text-sm text-white/70">
               <div className="space-y-2">
@@ -1092,7 +1183,7 @@ function Timeline({
   onZoomChange: (zoom: number) => void
 }) {
   const duration = Math.max(12, getProjectDuration(project) + 3)
-  const width = duration * zoom
+  const width = Math.max(duration * zoom, 3600)
   const timelineRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
@@ -1194,7 +1285,7 @@ function Timeline({
           <Slider
             value={[zoom]}
             min={32}
-            max={140}
+            max={520}
             step={4}
             onValueChange={(value) => onZoomChange(getSliderValue(value, zoom))}
           />
@@ -1593,6 +1684,32 @@ function waitForVideoMetadata(video: HTMLVideoElement) {
     }
 
     video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true })
+    video.addEventListener("error", onError, { once: true })
+  })
+}
+
+function waitForVideoSeek(video: HTMLVideoElement) {
+  if (!video.seeking) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    function cleanup() {
+      video.removeEventListener("seeked", onSeeked)
+      video.removeEventListener("error", onError)
+    }
+
+    function onSeeked() {
+      cleanup()
+      resolve()
+    }
+
+    function onError() {
+      cleanup()
+      reject(new Error("Could not seek video"))
+    }
+
+    video.addEventListener("seeked", onSeeked, { once: true })
     video.addEventListener("error", onError, { once: true })
   })
 }
