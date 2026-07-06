@@ -591,11 +591,15 @@ export function EditorClient() {
       </header>
 
       <section
-        className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_250px]"
+        className="grid min-h-0 flex-1"
+        style={{ gridTemplateRows: "minmax(420px, 1fr) 250px" }}
         onDragOver={allowDrop}
         onDrop={importFromDrop}
       >
-        <div className="grid min-h-0 grid-cols-[320px_minmax(0,1fr)] overflow-hidden">
+        <div
+          className="grid min-h-[420px] overflow-hidden"
+          style={{ gridTemplateColumns: "320px minmax(0, 1fr)" }}
+        >
           <InspectorPanel
             project={project}
             selectedAsset={selectedAsset}
@@ -1160,11 +1164,26 @@ function PreviewStage({
   ])
 
   return (
-    <section className="grid min-h-0 grid-rows-[1fr_auto] bg-background">
-      <div className="grid place-items-center p-4">
+    <section
+      className="grid min-h-[420px] border-4 border-fuchsia-500 bg-fuchsia-950/20"
+      style={{ gridTemplateRows: "32px minmax(0, 1fr) auto" }}
+    >
+      <div className="flex items-center justify-between bg-fuchsia-600 px-3 font-mono text-xs font-semibold text-white">
+        <span>PREVIEW STAGE MOUNTED</span>
+        <span>
+          clips {project.clips.length} · connected{" "}
+          {Object.keys(runtimeAssets).length} · asset{" "}
+          {runtimeAsset ? "yes" : "no"}
+        </span>
+      </div>
+      <div className="grid min-h-0 place-items-center p-4">
         <div
           className="relative w-full max-w-5xl overflow-hidden rounded-lg border-2 border-fuchsia-500 bg-[repeating-conic-gradient(#111_0_25%,#333_0_50%)_50%/24px_24px]"
-          style={{ aspectRatio: "16 / 9", minHeight: 320 }}
+          style={{
+            aspectRatio: "16 / 9",
+            minHeight: 320,
+            backgroundColor: "#111",
+          }}
         >
           {runtimeAsset ? (
             <>
