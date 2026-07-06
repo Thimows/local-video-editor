@@ -72,7 +72,7 @@ export function EditorClient() {
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetMap>({})
   const [selection, setSelection] = useState<Selection>({ type: "project" })
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
-  const [timelineZoom, setTimelineZoom] = useState(64)
+  const [timelineZoom, setTimelineZoom] = useState(4)
   const [isPlaying, setIsPlaying] = useState(false)
   const [status, setStatus] = useState("Loading project")
   const [exportState, setExportState] = useState<{
@@ -520,8 +520,8 @@ export function EditorClient() {
   }
 
   return (
-    <main className="flex h-svh min-h-[720px] flex-col overflow-hidden bg-background text-foreground">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b px-3">
+    <main className="flex h-svh min-h-[720px] w-full max-w-[100vw] min-w-0 flex-col overflow-hidden bg-background text-foreground">
+      <header className="flex h-14 min-w-0 shrink-0 items-center justify-between border-b px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button
             variant="ghost"
@@ -591,13 +591,13 @@ export function EditorClient() {
       </header>
 
       <section
-        className="grid min-h-0 flex-1"
+        className="grid min-h-0 min-w-0 flex-1 overflow-hidden"
         style={{ gridTemplateRows: "minmax(420px, 1fr) 250px" }}
         onDragOver={allowDrop}
         onDrop={importFromDrop}
       >
         <div
-          className="grid min-h-[420px] overflow-hidden"
+          className="grid min-h-[420px] min-w-0 overflow-hidden"
           style={{ gridTemplateColumns: "320px minmax(0, 1fr)" }}
         >
           <InspectorPanel
@@ -1185,7 +1185,7 @@ function PreviewStage({
 
   return (
     <section
-      className="grid min-h-[420px] border-4 border-fuchsia-500 bg-fuchsia-950/20"
+      className="grid min-h-[420px] min-w-0 overflow-hidden border-4 border-fuchsia-500 bg-fuchsia-950/20"
       style={{ gridTemplateRows: "32px minmax(0, 1fr) auto" }}
     >
       <div className="flex items-center justify-between bg-fuchsia-600 px-3 font-mono text-xs font-semibold text-white">
@@ -1403,7 +1403,7 @@ function Timeline({
   onZoomChange: (zoom: number) => void
 }) {
   const duration = Math.max(12, getProjectDuration(project) + 3)
-  const width = Math.max(duration * zoom, 3600)
+  const width = Math.max(duration * zoom, 1200)
   const timelineRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
@@ -1438,9 +1438,9 @@ function Timeline({
         )
         const direction = event.deltaY > 0 ? -1 : 1
         const nextZoom = clamp(
-          currentZoom + direction * Math.max(6, currentZoom * 0.14),
-          24,
-          260
+          currentZoom + direction * Math.max(0.5, currentZoom * 0.14),
+          1,
+          160
         )
 
         onZoomChange(nextZoom)
@@ -1493,23 +1493,23 @@ function Timeline({
   }
 
   return (
-    <section className="min-h-0 border-t bg-card">
-      <div className="flex h-11 items-center justify-between border-b px-3">
-        <div className="flex items-center gap-2">
+    <section className="min-h-0 max-w-full min-w-0 overflow-hidden border-t bg-card">
+      <div className="flex h-11 min-w-0 items-center justify-between gap-3 border-b px-3">
+        <div className="flex min-w-0 items-center gap-2">
           <Badge variant="outline">
             {formatDuration(getProjectDuration(project))}
           </Badge>
-          <span className="text-xs text-muted-foreground">
+          <span className="truncate text-xs text-muted-foreground">
             Drag clips to move, drag edges to trim, click the ruler to scrub.
           </span>
         </div>
-        <div className="flex w-56 items-center gap-2">
+        <div className="flex w-56 shrink-0 items-center gap-2">
           <Label className="text-xs">Zoom</Label>
           <Slider
             value={[zoom]}
-            min={32}
-            max={520}
-            step={4}
+            min={1}
+            max={160}
+            step={1}
             onValueChange={(value) => onZoomChange(getSliderValue(value, zoom))}
           />
         </div>
@@ -1517,12 +1517,19 @@ function Timeline({
 
       <div
         ref={timelineRef}
-        className="h-[205px] [touch-action:pan-x] overflow-auto overscroll-contain"
+        className="h-[205px] w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-contain"
+        style={{
+          contain: "layout paint",
+          scrollbarGutter: "stable",
+        }}
         onPointerDown={seekFromPointer}
         onPointerMove={updateHover}
         onPointerLeave={() => setHoverSeconds(null)}
       >
-        <div className="relative min-h-full" style={{ width }}>
+        <div
+          className="relative min-h-full max-w-none"
+          style={{ minWidth: width, width }}
+        >
           <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
             <div
               className="absolute inset-0 bg-[repeating-linear-gradient(to_right,transparent_0,transparent_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_var(--tick))]"
