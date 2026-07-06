@@ -272,12 +272,16 @@ export function EditorClient() {
     )
     setProject(nextProject)
     await saveProject(nextProject)
+    const savedProject = await getProject(nextProject.id)
+    const savedHandleCount =
+      savedProject?.sourceAssets.filter((asset) => asset.fileHandle?.getFile)
+        .length ?? 0
     setStatus(
       `Imported ${importedAssets.length} local file${
         importedAssets.length === 1 ? "" : "s"
       }${
         importedAssets.every((asset) => asset.fileHandle)
-          ? " with persistent handles"
+          ? ` with persistent handles (${savedHandleCount} saved)`
           : ". Some files need persistent reconnect for reload restore"
       }`
     )
@@ -428,9 +432,17 @@ export function EditorClient() {
 
     setProject(nextProject)
     await saveProject(nextProject)
+    const savedProject = await getProject(nextProject.id)
+    const savedAsset = savedProject?.sourceAssets.find(
+      (item) => item.id === assetId
+    )
     setStatus(
       `Reconnected ${asset.name}${
-        fileHandle ? " with persistent access" : " for this session"
+        fileHandle
+          ? savedAsset?.fileHandle?.getFile
+            ? " with persistent access saved"
+            : " but the handle was not stored by this browser"
+          : " for this session"
       }`
     )
   }
@@ -1147,13 +1159,21 @@ function PreviewStage({
   return (
     <section className="grid min-h-0 grid-rows-[1fr_auto] bg-background">
       <div className="grid place-items-center p-4">
-        <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-lg border bg-black">
+        <div
+          className="relative w-full max-w-5xl overflow-hidden rounded-lg border bg-black"
+          style={{ aspectRatio: "16 / 9" }}
+        >
           {runtimeAsset ? (
             <>
               <video
                 ref={videoRef}
                 src={runtimeAsset.objectUrl}
-                className="h-full w-full bg-black object-contain"
+                className="absolute inset-0 block bg-black"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                }}
                 controls
                 playsInline
                 preload="auto"
@@ -1298,10 +1318,13 @@ function Timeline({
       }
     }
 
-    scrollContainer.addEventListener("wheel", onWheel, { passive: false })
+    scrollContainer.addEventListener("wheel", onWheel, {
+      capture: true,
+      passive: false,
+    })
 
     return () => {
-      scrollContainer.removeEventListener("wheel", onWheel)
+      scrollContainer.removeEventListener("wheel", onWheel, { capture: true })
     }
   }, [onZoomChange])
 
