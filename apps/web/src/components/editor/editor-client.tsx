@@ -111,6 +111,61 @@ export function EditorClient() {
   }, [])
 
   useEffect(() => {
+    function preventPageZoomWheel(event: WheelEvent) {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+      }
+    }
+
+    function preventPageZoomKeys(event: KeyboardEvent) {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      if (
+        event.code === "Equal" ||
+        event.code === "Minus" ||
+        event.code === "Digit0" ||
+        event.code === "NumpadAdd" ||
+        event.code === "NumpadSubtract" ||
+        event.key === "+" ||
+        event.key === "-" ||
+        event.key === "=" ||
+        event.key === "0"
+      ) {
+        event.preventDefault()
+      }
+    }
+
+    function preventGestureZoom(event: Event) {
+      event.preventDefault()
+    }
+
+    window.addEventListener("wheel", preventPageZoomWheel, {
+      capture: true,
+      passive: false,
+    })
+    window.addEventListener("keydown", preventPageZoomKeys, { capture: true })
+    window.addEventListener("gesturestart", preventGestureZoom, {
+      passive: false,
+    })
+    window.addEventListener("gesturechange", preventGestureZoom, {
+      passive: false,
+    })
+
+    return () => {
+      window.removeEventListener("wheel", preventPageZoomWheel, {
+        capture: true,
+      })
+      window.removeEventListener("keydown", preventPageZoomKeys, {
+        capture: true,
+      })
+      window.removeEventListener("gesturestart", preventGestureZoom)
+      window.removeEventListener("gesturechange", preventGestureZoom)
+    }
+  }, [])
+
+  useEffect(() => {
     let active = true
 
     getProject(projectId).then((loadedProject) => {
@@ -565,7 +620,7 @@ export function EditorClient() {
   }
 
   return (
-    <main className="flex h-svh min-h-[720px] w-full max-w-[100vw] min-w-0 flex-col overflow-hidden bg-background text-foreground">
+    <main className="flex h-svh min-h-[720px] w-full max-w-[100vw] min-w-0 flex-col overflow-hidden bg-background text-foreground select-none">
       <header className="flex h-14 min-w-0 shrink-0 items-center justify-between border-b px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button
@@ -579,7 +634,7 @@ export function EditorClient() {
           </Button>
           <div className="min-w-0">
             <Input
-              className="h-8 border-transparent px-1 text-base font-medium shadow-none"
+              className="h-8 border-transparent px-1 text-base font-medium shadow-none select-text"
               value={project.name}
               onChange={(event) =>
                 setProject({
@@ -1029,6 +1084,11 @@ function PreviewStage({
   const videoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
+  const playbackClockRef = useRef<{
+    playheadSeconds: number
+    startedAt: number
+  } | null>(null)
+  const generatedPlayheadRef = useRef<number | null>(null)
   const [previewIssue, setPreviewIssue] = useState<string | null>(null)
   const sortedClips = useMemo(
     () =>
@@ -1049,7 +1109,38 @@ function PreviewStage({
 
   useEffect(() => {
     playheadRef.current = playheadSeconds
-  }, [playheadSeconds])
+
+    if (!isPlaying) {
+      playbackClockRef.current = null
+      generatedPlayheadRef.current = null
+      return
+    }
+
+    const generatedPlayhead = generatedPlayheadRef.current
+    const isGeneratedPlayhead =
+      generatedPlayhead !== null &&
+      Math.abs(generatedPlayhead - playheadSeconds) < 0.08
+
+    if (isGeneratedPlayhead) {
+      return
+    }
+
+    playbackClockRef.current = {
+      playheadSeconds,
+      startedAt: performance.now(),
+    }
+
+    const video = videoRef.current
+
+    if (
+      video &&
+      activeClip &&
+      runtimeAsset &&
+      video.readyState >= HTMLMediaElement.HAVE_METADATA
+    ) {
+      video.currentTime = getSourceTimeForPlayhead(activeClip, playheadSeconds)
+    }
+  }, [activeClip, isPlaying, playheadSeconds, runtimeAsset])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1107,15 +1198,22 @@ function PreviewStage({
 
     if (!video || !activeClip || !runtimeAsset) {
       if (isPlaying) {
-        const startPlayhead = playheadRef.current
-        const startedAt = performance.now()
+        playbackClockRef.current = {
+          playheadSeconds: playheadRef.current,
+          startedAt: performance.now(),
+        }
         let frame = 0
         let lastTimelineUpdate = 0
 
         function tickGap() {
-          const elapsedSeconds = (performance.now() - startedAt) / 1000
+          const clock = playbackClockRef.current ?? {
+            playheadSeconds: playheadRef.current,
+            startedAt: performance.now(),
+          }
+          playbackClockRef.current = clock
+          const elapsedSeconds = (performance.now() - clock.startedAt) / 1000
           const nextPlayhead = clamp(
-            startPlayhead + elapsedSeconds,
+            clock.playheadSeconds + elapsedSeconds,
             0,
             projectDuration
           )
@@ -1123,6 +1221,7 @@ function PreviewStage({
 
           if (now - lastTimelineUpdate > 16) {
             lastTimelineUpdate = now
+            generatedPlayheadRef.current = nextPlayhead
             onPlayheadChange(nextPlayhead)
           }
 
@@ -1144,8 +1243,10 @@ function PreviewStage({
     const player = video
     const clip = activeClip
     const asset = runtimeAsset
-    const startPlayhead = playheadRef.current
-    const startedAt = performance.now()
+    playbackClockRef.current = {
+      playheadSeconds: playheadRef.current,
+      startedAt: performance.now(),
+    }
     let cancelled = false
     let frame = 0
     let lastTimelineUpdate = 0
@@ -1177,9 +1278,14 @@ function PreviewStage({
     }
 
     function tick() {
-      const elapsedSeconds = (performance.now() - startedAt) / 1000
+      const clock = playbackClockRef.current ?? {
+        playheadSeconds: playheadRef.current,
+        startedAt: performance.now(),
+      }
+      playbackClockRef.current = clock
+      const elapsedSeconds = (performance.now() - clock.startedAt) / 1000
       const nextPlayhead = clamp(
-        startPlayhead + elapsedSeconds,
+        clock.playheadSeconds + elapsedSeconds,
         0,
         projectDuration
       )
@@ -1187,6 +1293,7 @@ function PreviewStage({
 
       if (now - lastTimelineUpdate > 16) {
         lastTimelineUpdate = now
+        generatedPlayheadRef.current = nextPlayhead
         onPlayheadChange(nextPlayhead)
       }
 
@@ -1377,14 +1484,9 @@ function Timeline({
         return
       }
 
-      const horizontalDelta =
-        Math.abs(event.deltaX) > Math.abs(event.deltaY)
-          ? event.deltaX
-          : event.deltaY
-
-      if (horizontalDelta !== 0) {
+      if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
         event.preventDefault()
-        scrollContainer.scrollLeft += horizontalDelta
+        scrollContainer.scrollLeft += event.deltaX
       }
     }
 
@@ -1489,7 +1591,7 @@ function Timeline({
         </div>
         <div
           ref={timelineRef}
-          className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-contain"
+          className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain"
           style={{
             contain: "layout paint",
             minHeight: timelineHeight,
@@ -1840,6 +1942,7 @@ function NumberField({
     <div className="space-y-2">
       <Label className="text-xs">{label}</Label>
       <Input
+        className="select-text"
         type="number"
         min={0}
         step={0.1}
