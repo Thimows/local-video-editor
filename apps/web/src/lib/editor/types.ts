@@ -20,6 +20,7 @@ export type TimelineClip = {
   sourceStartSeconds: number
   sourceEndSeconds: number
   timelineStartSeconds: number
+  trackIndex?: number
   muted: boolean
   volume: number
 }
@@ -30,6 +31,7 @@ export type MusicTrack = {
   timelineStartSeconds: number
   sourceStartSeconds: number
   sourceEndSeconds: number
+  trackIndex?: number
   volume: number
 }
 

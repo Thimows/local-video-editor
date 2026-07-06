@@ -64,6 +64,14 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
+const TRACK_HEADER_WIDTH = 56
+const RULER_HEIGHT = 32
+const TRACK_HEIGHT = 56
+const TRACK_GAP = 10
+const VIDEO_TRACK_TOP = RULER_HEIGHT + 12
+const SNAP_THRESHOLD_SECONDS = 0.35
+const MIN_ITEM_DURATION_SECONDS = 0.2
+
 export function EditorClient() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
@@ -251,23 +259,37 @@ export function EditorClient() {
       nextRuntimeAssets[asset.id] = createRuntimeAsset(file)
 
       if (type === "video") {
+        const trackIndex = findAvailableTrackIndex(
+          [...project.clips, ...importedClips],
+          nextTimelineStart,
+          sourceEndSeconds
+        )
+
         importedClips.push({
           id: crypto.randomUUID(),
           sourceAssetId: asset.id,
           sourceStartSeconds: 0,
           sourceEndSeconds,
           timelineStartSeconds: nextTimelineStart,
+          trackIndex,
           muted: false,
           volume: 1,
         })
         nextTimelineStart += sourceEndSeconds
       } else {
+        const trackIndex = findAvailableTrackIndex(
+          [...project.musicTracks, ...importedTracks],
+          0,
+          sourceEndSeconds
+        )
+
         importedTracks.push({
           id: crypto.randomUUID(),
           sourceAssetId: asset.id,
           timelineStartSeconds: 0,
           sourceStartSeconds: 0,
           sourceEndSeconds,
+          trackIndex,
           volume: 0.75,
         })
       }
@@ -359,7 +381,9 @@ export function EditorClient() {
     setProject({
       ...project,
       clips: project.clips.map((clip) =>
-        clip.id === id ? { ...clip, ...patch } : clip
+        clip.id === id
+          ? constrainTimelineItemPatch(clip, project.clips, patch)
+          : clip
       ),
       updatedAt: Date.now(),
     })
@@ -373,7 +397,9 @@ export function EditorClient() {
     setProject({
       ...project,
       musicTracks: project.musicTracks.map((track) =>
-        track.id === id ? { ...track, ...patch } : track
+        track.id === id
+          ? constrainTimelineItemPatch(track, project.musicTracks, patch)
+          : track
       ),
       updatedAt: Date.now(),
     })
@@ -1084,6 +1110,7 @@ function PreviewStage({
         const startPlayhead = playheadRef.current
         const startedAt = performance.now()
         let frame = 0
+        let lastTimelineUpdate = 0
 
         function tickGap() {
           const elapsedSeconds = (performance.now() - startedAt) / 1000
@@ -1092,8 +1119,12 @@ function PreviewStage({
             0,
             projectDuration
           )
+          const now = performance.now()
 
-          onPlayheadChange(nextPlayhead)
+          if (now - lastTimelineUpdate > 16) {
+            lastTimelineUpdate = now
+            onPlayheadChange(nextPlayhead)
+          }
 
           if (nextPlayhead >= projectDuration) {
             onPlayChange(false)
@@ -1113,6 +1144,8 @@ function PreviewStage({
     const player = video
     const clip = activeClip
     const asset = runtimeAsset
+    const startPlayhead = playheadRef.current
+    const startedAt = performance.now()
     let cancelled = false
     let frame = 0
     let lastTimelineUpdate = 0
@@ -1144,27 +1177,24 @@ function PreviewStage({
     }
 
     function tick() {
-      if (player.currentTime >= clip.sourceEndSeconds) {
-        const clipEnd = clip.timelineStartSeconds + getClipDuration(clip)
+      const elapsedSeconds = (performance.now() - startedAt) / 1000
+      const nextPlayhead = clamp(
+        startPlayhead + elapsedSeconds,
+        0,
+        projectDuration
+      )
+      const now = performance.now()
 
-        onPlayheadChange(clipEnd)
+      if (now - lastTimelineUpdate > 16) {
+        lastTimelineUpdate = now
+        onPlayheadChange(nextPlayhead)
+      }
 
-        if (clipEnd >= projectDuration) {
-          onPlayChange(false)
-        }
+      if (nextPlayhead >= projectDuration) {
+        onPlayChange(false)
         return
       }
 
-      const now = performance.now()
-
-      if (now - lastTimelineUpdate > 33) {
-        lastTimelineUpdate = now
-        onPlayheadChange(
-          clip.timelineStartSeconds +
-            player.currentTime -
-            clip.sourceStartSeconds
-        )
-      }
       frame = requestAnimationFrame(tick)
     }
 
@@ -1283,6 +1313,18 @@ function Timeline({
 }) {
   const duration = Math.max(12, getProjectDuration(project) + 3)
   const width = Math.max(duration * zoom, 1200)
+  const videoTrackCount = Math.max(2, getTrackCount(project.clips))
+  const audioTrackCount = Math.max(2, getTrackCount(project.musicTracks))
+  const audioTrackTop =
+    VIDEO_TRACK_TOP + videoTrackCount * (TRACK_HEIGHT + TRACK_GAP) + 16
+  const timelineHeight =
+    audioTrackTop + audioTrackCount * (TRACK_HEIGHT + TRACK_GAP) + 12
+  const tickInterval = getTimeTickInterval(zoom)
+  const ticks = useMemo(() => {
+    const count = Math.ceil(duration / tickInterval) + 1
+
+    return Array.from({ length: count }, (_, index) => index * tickInterval)
+  }, [duration, tickInterval])
   const timelineRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
@@ -1319,7 +1361,7 @@ function Timeline({
           currentZoom,
           currentDuration
         )
-        const zoomFactor = Math.exp(-event.deltaY * 0.002)
+        const zoomFactor = Math.exp(-event.deltaY * 0.005)
         const nextZoom = clamp(currentZoom * zoomFactor, 1, 160)
 
         if (Math.abs(nextZoom - currentZoom) < 0.01) {
@@ -1366,9 +1408,7 @@ function Timeline({
     }
 
     const anchorSeconds = playheadSecondsRef.current
-    const rawAnchorX =
-      anchorSeconds * zoomRef.current - scrollContainer.scrollLeft
-    const anchorX = clamp(rawAnchorX, 96, scrollContainer.clientWidth - 24)
+    const anchorX = scrollContainer.clientWidth / 2
 
     onZoomChange(clampedZoom)
 
@@ -1420,27 +1460,39 @@ function Timeline({
       </div>
 
       <div
-        className="grid h-[205px] min-w-0"
-        style={{ gridTemplateColumns: "88px minmax(0, 1fr)" }}
+        className="grid h-[205px] min-w-0 overflow-y-auto"
+        style={{
+          gridTemplateColumns: `${TRACK_HEADER_WIDTH}px minmax(0, 1fr)`,
+        }}
       >
-        <div className="relative border-r bg-muted/20">
+        <div
+          className="relative border-r bg-muted/20"
+          style={{ minHeight: timelineHeight }}
+        >
           <div className="h-8 border-b bg-card/95" />
-          <TrackLabel
-            icon={<Film className="size-3" />}
-            label="Video"
-            top={48}
-          />
-          <TrackLabel
-            icon={<FileAudio className="size-3" />}
-            label="Audio"
-            top={126}
-          />
+          {Array.from({ length: videoTrackCount }, (_, index) => (
+            <TrackLabel
+              key={`video-${index}`}
+              icon={<Film className="size-4" />}
+              label={`Video ${index + 1}`}
+              top={getVideoTrackTop(index)}
+            />
+          ))}
+          {Array.from({ length: audioTrackCount }, (_, index) => (
+            <TrackLabel
+              key={`audio-${index}`}
+              icon={<FileAudio className="size-4" />}
+              label={`Audio ${index + 1}`}
+              top={getAudioTrackTop(index, audioTrackTop)}
+            />
+          ))}
         </div>
         <div
           ref={timelineRef}
           className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-contain"
           style={{
             contain: "layout paint",
+            minHeight: timelineHeight,
             scrollbarGutter: "stable",
           }}
           onPointerDown={seekFromPointer}
@@ -1449,13 +1501,22 @@ function Timeline({
         >
           <div
             className="relative min-h-full max-w-none"
-            style={{ minWidth: width, width }}
+            style={{ minHeight: timelineHeight, minWidth: width, width }}
           >
             <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
               <div
                 className="absolute inset-0 bg-[repeating-linear-gradient(to_right,transparent_0,transparent_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_var(--tick))]"
                 style={{ "--tick": `${Math.max(zoom, 8)}px` } as CSSProperties}
               />
+              {ticks.map((seconds) => (
+                <div
+                  key={seconds}
+                  className="absolute top-0 h-full border-l px-1 pt-1 font-mono text-[10px] text-muted-foreground"
+                  style={{ left: seconds * zoom }}
+                >
+                  {formatDuration(seconds)}
+                </div>
+              ))}
               {hoverSeconds === null ? null : (
                 <div
                   className="absolute top-0 h-full w-px bg-primary/35"
@@ -1477,16 +1538,29 @@ function Timeline({
                 style={{ left: hoverSeconds * zoom }}
               />
             )}
+            {Array.from({ length: videoTrackCount }, (_, index) => (
+              <TrackLane
+                key={`video-lane-${index}`}
+                top={getVideoTrackTop(index)}
+              />
+            ))}
+            {Array.from({ length: audioTrackCount }, (_, index) => (
+              <TrackLane
+                key={`audio-lane-${index}`}
+                top={getAudioTrackTop(index, audioTrackTop)}
+              />
+            ))}
             {project.clips.map((clip) => {
               const asset = project.sourceAssets.find(
                 (item) => item.id === clip.sourceAssetId
               )
               const connected = Boolean(runtimeAssets[clip.sourceAssetId])
+              const trackIndex = getTrackIndex(clip)
 
               return (
                 <TimelineItem
                   key={clip.id}
-                  top={48}
+                  top={getVideoTrackTop(trackIndex)}
                   left={clip.timelineStartSeconds * zoom}
                   width={Math.max(28, getClipDuration(clip) * zoom)}
                   selected={
@@ -1496,12 +1570,13 @@ function Timeline({
                   muted={clip.muted}
                   connected={connected}
                   onSelect={() => onSelect({ type: "clip", id: clip.id })}
-                  onMove={(deltaSeconds) =>
+                  onMove={(deltaSeconds, deltaTracks) =>
                     onClipChange(clip.id, {
                       timelineStartSeconds: Math.max(
                         0,
                         clip.timelineStartSeconds + deltaSeconds
                       ),
+                      trackIndex: Math.max(0, trackIndex + deltaTracks),
                     })
                   }
                   onTrimStart={(deltaSeconds) =>
@@ -1533,11 +1608,12 @@ function Timeline({
                 (item) => item.id === track.sourceAssetId
               )
               const connected = Boolean(runtimeAssets[track.sourceAssetId])
+              const trackIndex = getTrackIndex(track)
 
               return (
                 <TimelineItem
                   key={track.id}
-                  top={126}
+                  top={getAudioTrackTop(trackIndex, audioTrackTop)}
                   left={track.timelineStartSeconds * zoom}
                   width={Math.max(28, getClipDuration(track) * zoom)}
                   selected={
@@ -1547,12 +1623,13 @@ function Timeline({
                   muted={false}
                   connected={connected}
                   onSelect={() => onSelect({ type: "music", id: track.id })}
-                  onMove={(deltaSeconds) =>
+                  onMove={(deltaSeconds, deltaTracks) =>
                     onMusicChange(track.id, {
                       timelineStartSeconds: Math.max(
                         0,
                         track.timelineStartSeconds + deltaSeconds
                       ),
+                      trackIndex: Math.max(0, trackIndex + deltaTracks),
                     })
                   }
                   onTrimStart={(deltaSeconds) =>
@@ -1609,13 +1686,15 @@ function TimelineItem({
   connected: boolean
   zoom: number
   onSelect: () => void
-  onMove: (deltaSeconds: number) => void
+  onMove: (deltaSeconds: number, deltaTracks: number) => void
   onTrimStart: (deltaSeconds: number) => void
   onTrimEnd: (deltaSeconds: number) => void
 }) {
-  const dragRef = useRef<{ x: number; mode: "move" | "start" | "end" } | null>(
-    null
-  )
+  const dragRef = useRef<{
+    x: number
+    y: number
+    mode: "move" | "start" | "end"
+  } | null>(null)
 
   function startDrag(
     event: PointerEvent<HTMLDivElement>,
@@ -1624,7 +1703,7 @@ function TimelineItem({
     event.stopPropagation()
     onSelect()
     event.currentTarget.setPointerCapture(event.pointerId)
-    dragRef.current = { x: event.clientX, mode }
+    dragRef.current = { x: event.clientX, y: event.clientY, mode }
   }
 
   function moveDrag(event: PointerEvent<HTMLDivElement>) {
@@ -1634,10 +1713,19 @@ function TimelineItem({
 
     event.stopPropagation()
     const deltaSeconds = (event.clientX - dragRef.current.x) / zoom
+    const deltaTracks =
+      dragRef.current.mode === "move"
+        ? Math.trunc(
+            (event.clientY - dragRef.current.y) / (TRACK_HEIGHT + TRACK_GAP)
+          )
+        : 0
     dragRef.current.x = event.clientX
 
     if (dragRef.current.mode === "move") {
-      onMove(deltaSeconds)
+      if (deltaTracks !== 0) {
+        dragRef.current.y += deltaTracks * (TRACK_HEIGHT + TRACK_GAP)
+      }
+      onMove(deltaSeconds, deltaTracks)
     } else if (dragRef.current.mode === "start") {
       onTrimStart(deltaSeconds)
     } else {
@@ -1648,13 +1736,13 @@ function TimelineItem({
   return (
     <div
       className={[
-        "absolute h-12 overflow-hidden rounded-md border text-xs shadow-sm",
+        "absolute overflow-hidden rounded-md border text-xs shadow-sm transition-[top]",
         selected
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border bg-background",
         connected ? "" : "opacity-60",
       ].join(" ")}
-      style={{ top, left, width }}
+      style={{ top, left, width, height: TRACK_HEIGHT }}
       onPointerDown={(event) => startDrag(event, "move")}
       onPointerMove={moveDrag}
       onPointerUp={() => {
@@ -1688,12 +1776,22 @@ function TrackLabel({
 }) {
   return (
     <div
-      className="absolute left-2 z-20 flex w-[72px] items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground"
-      style={{ top }}
+      className="absolute left-2 z-20 grid size-9 place-items-center rounded-md border bg-background text-muted-foreground"
+      style={{ top: top + (TRACK_HEIGHT - 36) / 2 }}
+      aria-label={label}
+      title={label}
     >
       {icon}
-      {label}
     </div>
+  )
+}
+
+function TrackLane({ top }: { top: number }) {
+  return (
+    <div
+      className="absolute inset-x-0 rounded-md border-y bg-muted/10"
+      style={{ top, height: TRACK_HEIGHT }}
+    />
   )
 }
 
@@ -1761,13 +1859,267 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
-function findClipAtTime(clips: TimelineClip[], seconds: number) {
-  return clips.find((clip) => {
-    const start = clip.timelineStartSeconds
-    const end = clip.timelineStartSeconds + getClipDuration(clip)
+type TimelineItemData = TimelineClip | MusicTrack
 
-    return seconds >= start && seconds < end
-  })
+function getTrackIndex(item: { trackIndex?: number }) {
+  return Math.max(0, Math.round(item.trackIndex ?? 0))
+}
+
+function getTrackCount(items: { trackIndex?: number }[]) {
+  return items.reduce(
+    (count, item) => Math.max(count, getTrackIndex(item) + 1),
+    1
+  )
+}
+
+function getVideoTrackTop(trackIndex: number) {
+  return VIDEO_TRACK_TOP + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
+}
+
+function getAudioTrackTop(trackIndex: number, audioTrackTop: number) {
+  return audioTrackTop + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
+}
+
+function getTimeTickInterval(zoom: number) {
+  const targetPixels = 96
+  const rawSeconds = targetPixels / zoom
+  const intervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+
+  return intervals.find((interval) => interval >= rawSeconds) ?? 900
+}
+
+function findAvailableTrackIndex(
+  items: TimelineItemData[],
+  startSeconds: number,
+  durationSeconds: number
+) {
+  for (let trackIndex = 0; trackIndex < 32; trackIndex += 1) {
+    if (
+      !items.some(
+        (item) =>
+          getTrackIndex(item) === trackIndex &&
+          rangesOverlap(
+            startSeconds,
+            startSeconds + durationSeconds,
+            item.timelineStartSeconds,
+            item.timelineStartSeconds + getClipDuration(item)
+          )
+      )
+    ) {
+      return trackIndex
+    }
+  }
+
+  return 0
+}
+
+function constrainTimelineItemPatch<T extends TimelineItemData>(
+  item: T,
+  items: T[],
+  patch: Partial<T>
+): T {
+  const next = {
+    ...item,
+    ...patch,
+    trackIndex: Math.max(
+      0,
+      Math.round(patch.trackIndex ?? item.trackIndex ?? 0)
+    ),
+  }
+  const laneItems = items.filter(
+    (candidate) =>
+      candidate.id !== item.id && getTrackIndex(candidate) === next.trackIndex
+  )
+  const isTrimStart =
+    patch.timelineStartSeconds !== undefined &&
+    patch.sourceStartSeconds !== undefined
+  const isTrimEnd = patch.sourceEndSeconds !== undefined && !isTrimStart
+  const isMove =
+    patch.timelineStartSeconds !== undefined && !isTrimStart && !isTrimEnd
+
+  if (isMove) {
+    const duration = getClipDuration(next)
+    const snappedStart = snapTimelineStart(
+      Math.max(0, next.timelineStartSeconds),
+      duration,
+      laneItems
+    )
+
+    return {
+      ...next,
+      timelineStartSeconds: findNearestNonOverlappingStart(
+        snappedStart,
+        duration,
+        laneItems
+      ),
+    }
+  }
+
+  if (isTrimStart) {
+    const fixedEnd = item.timelineStartSeconds + getClipDuration(item)
+    const nextItemStart = getNextItemStart(laneItems, fixedEnd)
+    const maxEnd = nextItemStart ?? fixedEnd
+    const desiredStart = snapPoint(Math.max(0, next.timelineStartSeconds), [
+      0,
+      ...laneItems.flatMap((laneItem) => [
+        laneItem.timelineStartSeconds,
+        laneItem.timelineStartSeconds + getClipDuration(laneItem),
+      ]),
+    ])
+    const clampedStart = clamp(
+      desiredStart,
+      getPreviousItemEnd(laneItems, fixedEnd),
+      Math.min(fixedEnd - MIN_ITEM_DURATION_SECONDS, maxEnd)
+    )
+    const duration = fixedEnd - clampedStart
+
+    return {
+      ...next,
+      timelineStartSeconds: clampedStart,
+      sourceStartSeconds: next.sourceEndSeconds - duration,
+    }
+  }
+
+  if (isTrimEnd) {
+    const start = next.timelineStartSeconds
+    const maxEnd = getNextItemStart(laneItems, start) ?? Infinity
+    const desiredEnd = snapPoint(start + getClipDuration(next), [
+      ...laneItems.flatMap((laneItem) => [
+        laneItem.timelineStartSeconds,
+        laneItem.timelineStartSeconds + getClipDuration(laneItem),
+      ]),
+    ])
+    const clampedEnd = clamp(
+      desiredEnd,
+      start + MIN_ITEM_DURATION_SECONDS,
+      maxEnd
+    )
+
+    return {
+      ...next,
+      sourceEndSeconds: next.sourceStartSeconds + clampedEnd - start,
+    }
+  }
+
+  return next
+}
+
+function snapTimelineStart(
+  startSeconds: number,
+  durationSeconds: number,
+  laneItems: TimelineItemData[]
+) {
+  const endSeconds = startSeconds + durationSeconds
+  const points = [
+    0,
+    ...laneItems.flatMap((item) => [
+      item.timelineStartSeconds,
+      item.timelineStartSeconds + getClipDuration(item),
+    ]),
+  ]
+  const snappedStart = snapPoint(startSeconds, points)
+
+  if (snappedStart !== startSeconds) {
+    return snappedStart
+  }
+
+  const snappedEnd = snapPoint(endSeconds, points)
+
+  return snappedEnd === endSeconds ? startSeconds : snappedEnd - durationSeconds
+}
+
+function snapPoint(value: number, points: number[]) {
+  let nearest = value
+  let nearestDistance = SNAP_THRESHOLD_SECONDS
+
+  for (const point of points) {
+    const distance = Math.abs(value - point)
+
+    if (distance <= nearestDistance) {
+      nearest = point
+      nearestDistance = distance
+    }
+  }
+
+  return Math.max(0, nearest)
+}
+
+function findNearestNonOverlappingStart(
+  desiredStart: number,
+  durationSeconds: number,
+  laneItems: TimelineItemData[]
+) {
+  const sorted = [...laneItems].sort(
+    (a, b) => a.timelineStartSeconds - b.timelineStartSeconds
+  )
+  const candidates = [Math.max(0, desiredStart), 0]
+
+  for (const item of sorted) {
+    candidates.push(item.timelineStartSeconds - durationSeconds)
+    candidates.push(item.timelineStartSeconds + getClipDuration(item))
+  }
+
+  return (
+    candidates
+      .filter((candidate) => candidate >= 0)
+      .filter(
+        (candidate) =>
+          !sorted.some((item) =>
+            rangesOverlap(
+              candidate,
+              candidate + durationSeconds,
+              item.timelineStartSeconds,
+              item.timelineStartSeconds + getClipDuration(item)
+            )
+          )
+      )
+      .sort(
+        (a, b) => Math.abs(a - desiredStart) - Math.abs(b - desiredStart)
+      )[0] ?? Math.max(0, desiredStart)
+  )
+}
+
+function getPreviousItemEnd(
+  laneItems: TimelineItemData[],
+  beforeSeconds: number
+) {
+  return laneItems.reduce((end, item) => {
+    const itemEnd = item.timelineStartSeconds + getClipDuration(item)
+
+    return itemEnd <= beforeSeconds ? Math.max(end, itemEnd) : end
+  }, 0)
+}
+
+function getNextItemStart(laneItems: TimelineItemData[], afterSeconds: number) {
+  return laneItems.reduce<number | undefined>((start, item) => {
+    if (item.timelineStartSeconds < afterSeconds) {
+      return start
+    }
+
+    return start === undefined
+      ? item.timelineStartSeconds
+      : Math.min(start, item.timelineStartSeconds)
+  }, undefined)
+}
+
+function rangesOverlap(
+  startA: number,
+  endA: number,
+  startB: number,
+  endB: number
+) {
+  return startA < endB && endA > startB
+}
+
+function findClipAtTime(clips: TimelineClip[], seconds: number) {
+  return clips
+    .filter((clip) => {
+      const start = clip.timelineStartSeconds
+      const end = clip.timelineStartSeconds + getClipDuration(clip)
+
+      return seconds >= start && seconds < end
+    })
+    .sort((a, b) => getTrackIndex(b) - getTrackIndex(a))[0]
 }
 
 function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
