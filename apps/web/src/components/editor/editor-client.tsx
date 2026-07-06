@@ -1163,6 +1163,26 @@ function PreviewStage({
     sortedClips,
   ])
 
+  useEffect(() => {
+    if (!runtimeAsset) {
+      return
+    }
+
+    const interval = window.setInterval(() => {
+      const video = videoRef.current
+
+      if (!video) {
+        setLayoutInfo("video element not mounted")
+        return
+      }
+
+      setPreviewInfo(getVideoDebugInfo(video))
+      setLayoutInfo(getVideoLayoutInfo(video))
+    }, 500)
+
+    return () => window.clearInterval(interval)
+  }, [runtimeAsset])
+
   return (
     <section
       className="grid min-h-[420px] border-4 border-fuchsia-500 bg-fuchsia-950/20"
@@ -1176,25 +1196,69 @@ function PreviewStage({
           {runtimeAsset ? "yes" : "no"}
         </span>
       </div>
-      <div className="grid min-h-0 place-items-center p-4">
+      <div
+        style={{
+          alignItems: "center",
+          background: "rgba(216, 0, 255, 0.12)",
+          borderBottom: "2px solid #d100ff",
+          borderTop: "2px solid #d100ff",
+          display: "flex",
+          justifyContent: "center",
+          minHeight: 0,
+          padding: 16,
+        }}
+      >
         <div
-          className="relative w-full max-w-5xl overflow-hidden rounded-lg border-2 border-fuchsia-500 bg-[repeating-conic-gradient(#111_0_25%,#333_0_50%)_50%/24px_24px]"
+          data-preview-shell="true"
           style={{
-            aspectRatio: "16 / 9",
-            minHeight: 320,
-            backgroundColor: "#111",
+            background:
+              "repeating-conic-gradient(#111 0% 25%, #333 0% 50%) 50% / 24px 24px",
+            border: "6px solid #39ff14",
+            borderRadius: 8,
+            boxSizing: "border-box",
+            height: "min(100%, 630px)",
+            minHeight: 360,
+            outline: "4px solid #d100ff",
+            overflow: "hidden",
+            position: "relative",
+            width: "min(100%, 1120px)",
           }}
         >
+          <div
+            style={{
+              background: "rgba(216, 0, 255, 0.85)",
+              border: "1px solid rgba(255, 255, 255, 0.45)",
+              borderRadius: 6,
+              color: "white",
+              fontFamily: "monospace",
+              fontSize: 11,
+              fontWeight: 700,
+              padding: "4px 7px",
+              position: "absolute",
+              right: 10,
+              top: 10,
+              zIndex: 5,
+            }}
+          >
+            SHELL VISIBLE · asset {runtimeAsset ? "yes" : "no"} · clip{" "}
+            {activeClip ? "yes" : "no"}
+          </div>
           {runtimeAsset ? (
             <>
               <video
                 ref={videoRef}
                 src={runtimeAsset.objectUrl}
-                className="absolute inset-0 block bg-black"
                 style={{
-                  width: "100%",
+                  background: "#000",
+                  display: "block",
                   height: "100%",
+                  inset: 0,
                   objectFit: "contain",
+                  opacity: 1,
+                  position: "absolute",
+                  visibility: "visible",
+                  width: "100%",
+                  zIndex: 1,
                 }}
                 controls
                 playsInline
@@ -1215,23 +1279,77 @@ function PreviewStage({
                   setLayoutInfo(getVideoLayoutInfo(video))
                 }}
               />
-              <div className="absolute top-3 left-3 rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] text-white/75">
+              <div
+                style={{
+                  background: "rgba(0, 0, 0, 0.72)",
+                  border: "1px solid rgba(255, 255, 255, 0.18)",
+                  borderRadius: 6,
+                  color: "rgba(255, 255, 255, 0.78)",
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  left: 10,
+                  padding: "4px 7px",
+                  position: "absolute",
+                  top: 10,
+                  zIndex: 4,
+                }}
+              >
                 {previewInfo}
               </div>
-              <div className="absolute bottom-3 left-3 max-w-[70%] rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] leading-4 text-white/75">
+              <div
+                style={{
+                  background: "rgba(0, 0, 0, 0.72)",
+                  border: "1px solid rgba(255, 255, 255, 0.18)",
+                  borderRadius: 6,
+                  bottom: 10,
+                  color: "rgba(255, 255, 255, 0.78)",
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  left: 10,
+                  lineHeight: "16px",
+                  maxWidth: "70%",
+                  padding: "4px 7px",
+                  position: "absolute",
+                  zIndex: 4,
+                }}
+              >
                 {layoutInfo}
               </div>
-              <div className="absolute top-3 right-3 rounded-md border border-fuchsia-300/50 bg-fuchsia-950/80 px-2 py-1 text-[11px] font-medium text-white">
-                video bounds
-              </div>
               {previewIssue ? (
-                <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
+                <div
+                  style={{
+                    background: "rgba(0, 0, 0, 0.82)",
+                    border: "1px solid rgba(255, 255, 255, 0.18)",
+                    borderRadius: 6,
+                    bottom: 44,
+                    color: "white",
+                    fontSize: 12,
+                    left: 10,
+                    lineHeight: "20px",
+                    padding: 12,
+                    position: "absolute",
+                    right: 10,
+                    zIndex: 4,
+                  }}
+                >
                   {previewIssue}
                 </div>
               ) : null}
             </>
           ) : (
-            <div className="grid h-full place-items-center text-center text-sm text-white/70">
+            <div
+              style={{
+                alignItems: "center",
+                color: "rgba(255, 255, 255, 0.72)",
+                display: "flex",
+                fontSize: 14,
+                inset: 0,
+                justifyContent: "center",
+                position: "absolute",
+                textAlign: "center",
+                zIndex: 2,
+              }}
+            >
               <div className="space-y-2">
                 <Film className="mx-auto size-10" />
                 <p>Import or reconnect a local video file to preview.</p>
