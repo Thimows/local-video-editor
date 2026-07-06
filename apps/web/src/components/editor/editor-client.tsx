@@ -84,6 +84,25 @@ export function EditorClient() {
   const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
 
   useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.repeat ||
+        (event.code !== "Space" && event.key !== " ") ||
+        isTextEditingTarget(event.target)
+      ) {
+        return
+      }
+
+      event.preventDefault()
+      setIsPlaying((current) => !current)
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
+  useEffect(() => {
     let active = true
 
     getProject(projectId).then((loadedProject) => {
@@ -985,8 +1004,6 @@ function PreviewStage({
   const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
   const [previewIssue, setPreviewIssue] = useState<string | null>(null)
-  const [previewInfo, setPreviewInfo] = useState("No video connected")
-  const [layoutInfo, setLayoutInfo] = useState("layout pending")
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -995,16 +1012,14 @@ function PreviewStage({
     [project.clips]
   )
   const clipAtPlayhead = findClipAtTime(sortedClips, playheadSeconds)
-  const activeClip =
-    clipAtPlayhead ??
-    getPlayableClipAtOrAfter(sortedClips, playheadSeconds, runtimeAssets) ??
-    getFirstPlayableClip(sortedClips, runtimeAssets)
+  const activeClip = clipAtPlayhead
   const runtimeAsset = activeClip
     ? runtimeAssets[activeClip.sourceAssetId]
     : undefined
   const hasPlayableClip = sortedClips.some(
     (clip) => runtimeAssets[clip.sourceAssetId]
   )
+  const projectDuration = getProjectDuration(project)
 
   useEffect(() => {
     playheadRef.current = playheadSeconds
@@ -1052,8 +1067,6 @@ function PreviewStage({
       } else {
         setPreviewIssue(null)
       }
-      setPreviewInfo(getVideoDebugInfo(player))
-      setLayoutInfo(getVideoLayoutInfo(player))
     }
 
     syncVideo().catch(() => undefined)
@@ -1068,17 +1081,31 @@ function PreviewStage({
 
     if (!video || !activeClip || !runtimeAsset) {
       if (isPlaying) {
-        const nextPlayableClip = getPlayableClipAtOrAfter(
-          sortedClips,
-          playheadRef.current,
-          runtimeAssets
-        )
+        const startPlayhead = playheadRef.current
+        const startedAt = performance.now()
+        let frame = 0
 
-        if (nextPlayableClip) {
-          onPlayheadChange(nextPlayableClip.timelineStartSeconds)
-        } else {
-          onPlayChange(false)
+        function tickGap() {
+          const elapsedSeconds = (performance.now() - startedAt) / 1000
+          const nextPlayhead = clamp(
+            startPlayhead + elapsedSeconds,
+            0,
+            projectDuration
+          )
+
+          onPlayheadChange(nextPlayhead)
+
+          if (nextPlayhead >= projectDuration) {
+            onPlayChange(false)
+            return
+          }
+
+          frame = requestAnimationFrame(tickGap)
         }
+
+        frame = requestAnimationFrame(tickGap)
+
+        return () => cancelAnimationFrame(frame)
       }
       return
     }
@@ -1110,8 +1137,6 @@ function PreviewStage({
             ? "The audio can play, but this browser is not exposing a decodable video track for this file."
             : null
         )
-        setPreviewInfo(getVideoDebugInfo(player))
-        setLayoutInfo(getVideoLayoutInfo(player))
         await player.play().catch(() => undefined)
       } else {
         player.pause()
@@ -1120,11 +1145,11 @@ function PreviewStage({
 
     function tick() {
       if (player.currentTime >= clip.sourceEndSeconds) {
-        const nextClip = getNextPlayableClip(sortedClips, clip, runtimeAssets)
+        const clipEnd = clip.timelineStartSeconds + getClipDuration(clip)
 
-        if (nextClip) {
-          onPlayheadChange(nextClip.timelineStartSeconds)
-        } else {
+        onPlayheadChange(clipEnd)
+
+        if (clipEnd >= projectDuration) {
           onPlayChange(false)
         }
         return
@@ -1158,109 +1183,24 @@ function PreviewStage({
     isPlaying,
     onPlayChange,
     onPlayheadChange,
+    projectDuration,
     runtimeAsset,
-    runtimeAssets,
     sortedClips,
   ])
 
-  useEffect(() => {
-    if (!runtimeAsset) {
-      return
-    }
-
-    const interval = window.setInterval(() => {
-      const video = videoRef.current
-
-      if (!video) {
-        setLayoutInfo("video element not mounted")
-        return
-      }
-
-      setPreviewInfo(getVideoDebugInfo(video))
-      setLayoutInfo(getVideoLayoutInfo(video))
-    }, 500)
-
-    return () => window.clearInterval(interval)
-  }, [runtimeAsset])
-
   return (
     <section
-      className="grid min-h-[420px] min-w-0 overflow-hidden border-4 border-fuchsia-500 bg-fuchsia-950/20"
-      style={{ gridTemplateRows: "32px minmax(0, 1fr) auto" }}
+      className="grid min-h-[420px] min-w-0 overflow-hidden bg-black"
+      style={{ gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
-      <div className="flex items-center justify-between bg-fuchsia-600 px-3 font-mono text-xs font-semibold text-white">
-        <span>PREVIEW STAGE MOUNTED</span>
-        <span>
-          clips {project.clips.length} · connected{" "}
-          {Object.keys(runtimeAssets).length} · asset{" "}
-          {runtimeAsset ? "yes" : "no"}
-        </span>
-      </div>
-      <div
-        style={{
-          alignItems: "center",
-          background: "rgba(216, 0, 255, 0.12)",
-          borderBottom: "2px solid #d100ff",
-          borderTop: "2px solid #d100ff",
-          display: "flex",
-          justifyContent: "center",
-          minHeight: 0,
-          padding: 16,
-        }}
-      >
-        <div
-          data-preview-shell="true"
-          style={{
-            background:
-              "repeating-conic-gradient(#111 0% 25%, #333 0% 50%) 50% / 24px 24px",
-            border: "6px solid #39ff14",
-            borderRadius: 8,
-            boxSizing: "border-box",
-            height: "min(100%, 630px)",
-            minHeight: 360,
-            outline: "4px solid #d100ff",
-            overflow: "hidden",
-            position: "relative",
-            width: "min(100%, 1120px)",
-          }}
-        >
-          <div
-            style={{
-              background: "rgba(216, 0, 255, 0.85)",
-              border: "1px solid rgba(255, 255, 255, 0.45)",
-              borderRadius: 6,
-              color: "white",
-              fontFamily: "monospace",
-              fontSize: 11,
-              fontWeight: 700,
-              padding: "4px 7px",
-              position: "absolute",
-              right: 10,
-              top: 10,
-              zIndex: 5,
-            }}
-          >
-            SHELL VISIBLE · asset {runtimeAsset ? "yes" : "no"} · clip{" "}
-            {activeClip ? "yes" : "no"}
-          </div>
+      <div className="grid min-h-0 place-items-center bg-black p-4">
+        <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-md bg-black">
           {runtimeAsset ? (
             <>
               <video
                 ref={videoRef}
                 src={runtimeAsset.objectUrl}
-                style={{
-                  background: "#000",
-                  display: "block",
-                  height: "100%",
-                  inset: 0,
-                  objectFit: "contain",
-                  opacity: 1,
-                  position: "absolute",
-                  visibility: "visible",
-                  width: "100%",
-                  zIndex: 1,
-                }}
-                controls
+                className="absolute inset-0 block h-full w-full bg-black object-contain"
                 playsInline
                 preload="auto"
                 onError={() =>
@@ -1275,84 +1215,23 @@ function PreviewStage({
                       ? "The audio can play, but this browser is not exposing a decodable video track for this file."
                       : null
                   )
-                  setPreviewInfo(getVideoDebugInfo(video))
-                  setLayoutInfo(getVideoLayoutInfo(video))
                 }}
               />
-              <div
-                style={{
-                  background: "rgba(0, 0, 0, 0.72)",
-                  border: "1px solid rgba(255, 255, 255, 0.18)",
-                  borderRadius: 6,
-                  color: "rgba(255, 255, 255, 0.78)",
-                  fontFamily: "monospace",
-                  fontSize: 11,
-                  left: 10,
-                  padding: "4px 7px",
-                  position: "absolute",
-                  top: 10,
-                  zIndex: 4,
-                }}
-              >
-                {previewInfo}
-              </div>
-              <div
-                style={{
-                  background: "rgba(0, 0, 0, 0.72)",
-                  border: "1px solid rgba(255, 255, 255, 0.18)",
-                  borderRadius: 6,
-                  bottom: 10,
-                  color: "rgba(255, 255, 255, 0.78)",
-                  fontFamily: "monospace",
-                  fontSize: 11,
-                  left: 10,
-                  lineHeight: "16px",
-                  maxWidth: "70%",
-                  padding: "4px 7px",
-                  position: "absolute",
-                  zIndex: 4,
-                }}
-              >
-                {layoutInfo}
-              </div>
               {previewIssue ? (
-                <div
-                  style={{
-                    background: "rgba(0, 0, 0, 0.82)",
-                    border: "1px solid rgba(255, 255, 255, 0.18)",
-                    borderRadius: 6,
-                    bottom: 44,
-                    color: "white",
-                    fontSize: 12,
-                    left: 10,
-                    lineHeight: "20px",
-                    padding: 12,
-                    position: "absolute",
-                    right: 10,
-                    zIndex: 4,
-                  }}
-                >
+                <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
                   {previewIssue}
                 </div>
               ) : null}
             </>
           ) : (
-            <div
-              style={{
-                alignItems: "center",
-                color: "rgba(255, 255, 255, 0.72)",
-                display: "flex",
-                fontSize: 14,
-                inset: 0,
-                justifyContent: "center",
-                position: "absolute",
-                textAlign: "center",
-                zIndex: 2,
-              }}
-            >
+            <div className="absolute inset-0 grid place-items-center bg-black text-center text-sm text-white/55">
               <div className="space-y-2">
                 <Film className="mx-auto size-10" />
-                <p>Import or reconnect a local video file to preview.</p>
+                <p>
+                  {hasPlayableClip
+                    ? "No clip at the playhead."
+                    : "Import or reconnect a local video file to preview."}
+                </p>
               </div>
             </div>
           )}
@@ -1370,7 +1249,7 @@ function PreviewStage({
           </Button>
           <span className="font-mono text-sm text-muted-foreground">
             {formatDuration(playheadSeconds)} /{" "}
-            {formatDuration(getProjectDuration(project))}
+            {formatDuration(projectDuration)}
           </span>
         </div>
         <Badge variant="outline">Native media preview</Badge>
@@ -1407,12 +1286,14 @@ function Timeline({
   const timelineRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
+  const playheadSecondsRef = useRef(playheadSeconds)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
 
   useEffect(() => {
     zoomRef.current = zoom
     durationRef.current = duration
-  }, [duration, zoom])
+    playheadSecondsRef.current = playheadSeconds
+  }, [duration, playheadSeconds, zoom])
 
   useEffect(() => {
     const container = timelineRef.current
@@ -1430,25 +1311,25 @@ function Timeline({
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault()
 
+        const rect = scrollContainer.getBoundingClientRect()
+        const cursorX = event.clientX - rect.left
         const secondsAtCursor = getTimelineSeconds(
           scrollContainer,
           event.clientX,
           currentZoom,
           currentDuration
         )
-        const direction = event.deltaY > 0 ? -1 : 1
-        const nextZoom = clamp(
-          currentZoom + direction * Math.max(0.5, currentZoom * 0.14),
-          1,
-          160
-        )
+        const zoomFactor = Math.exp(-event.deltaY * 0.002)
+        const nextZoom = clamp(currentZoom * zoomFactor, 1, 160)
 
-        onZoomChange(nextZoom)
+        if (Math.abs(nextZoom - currentZoom) < 0.01) {
+          return
+        }
+
+        onZoomChange(Number(nextZoom.toFixed(2)))
 
         requestAnimationFrame(() => {
-          scrollContainer.scrollLeft =
-            secondsAtCursor * nextZoom -
-            (event.clientX - scrollContainer.getBoundingClientRect().left)
+          scrollContainer.scrollLeft = secondsAtCursor * nextZoom - cursorX
         })
 
         return
@@ -1474,6 +1355,27 @@ function Timeline({
       scrollContainer.removeEventListener("wheel", onWheel, { capture: true })
     }
   }, [onZoomChange])
+
+  function zoomAroundPlayhead(nextZoom: number) {
+    const scrollContainer = timelineRef.current
+    const clampedZoom = clamp(nextZoom, 1, 160)
+
+    if (!scrollContainer) {
+      onZoomChange(clampedZoom)
+      return
+    }
+
+    const anchorSeconds = playheadSecondsRef.current
+    const rawAnchorX =
+      anchorSeconds * zoomRef.current - scrollContainer.scrollLeft
+    const anchorX = clamp(rawAnchorX, 96, scrollContainer.clientWidth - 24)
+
+    onZoomChange(clampedZoom)
+
+    requestAnimationFrame(() => {
+      scrollContainer.scrollLeft = anchorSeconds * clampedZoom - anchorX
+    })
+  }
 
   function getSecondsFromPointer(event: PointerEvent<HTMLDivElement>) {
     return getTimelineSeconds(
@@ -1509,43 +1411,20 @@ function Timeline({
             value={[zoom]}
             min={1}
             max={160}
-            step={1}
-            onValueChange={(value) => onZoomChange(getSliderValue(value, zoom))}
+            step={0.25}
+            onValueChange={(value) =>
+              zoomAroundPlayhead(getSliderValue(value, zoom))
+            }
           />
         </div>
       </div>
 
       <div
-        ref={timelineRef}
-        className="h-[205px] w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-contain"
-        style={{
-          contain: "layout paint",
-          scrollbarGutter: "stable",
-        }}
-        onPointerDown={seekFromPointer}
-        onPointerMove={updateHover}
-        onPointerLeave={() => setHoverSeconds(null)}
+        className="grid h-[205px] min-w-0"
+        style={{ gridTemplateColumns: "88px minmax(0, 1fr)" }}
       >
-        <div
-          className="relative min-h-full max-w-none"
-          style={{ minWidth: width, width }}
-        >
-          <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
-            <div
-              className="absolute inset-0 bg-[repeating-linear-gradient(to_right,transparent_0,transparent_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_var(--tick))]"
-              style={{ "--tick": `${zoom}px` } as CSSProperties}
-            />
-            {hoverSeconds === null ? null : (
-              <div
-                className="absolute top-0 h-full w-px bg-primary/35"
-                style={{ left: hoverSeconds * zoom }}
-              />
-            )}
-            <div
-              className="absolute top-0 h-full w-px bg-primary"
-              style={{ left: playheadSeconds * zoom }}
-            />
-          </div>
+        <div className="relative border-r bg-muted/20">
+          <div className="h-8 border-b bg-card/95" />
           <TrackLabel
             icon={<Film className="size-3" />}
             label="Video"
@@ -1556,116 +1435,151 @@ function Timeline({
             label="Audio"
             top={126}
           />
+        </div>
+        <div
+          ref={timelineRef}
+          className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-contain"
+          style={{
+            contain: "layout paint",
+            scrollbarGutter: "stable",
+          }}
+          onPointerDown={seekFromPointer}
+          onPointerMove={updateHover}
+          onPointerLeave={() => setHoverSeconds(null)}
+        >
           <div
-            className="absolute top-8 bottom-0 w-px bg-primary"
-            style={{ left: playheadSeconds * zoom }}
-          />
-          {hoverSeconds === null ? null : (
+            className="relative min-h-full max-w-none"
+            style={{ minWidth: width, width }}
+          >
+            <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
+              <div
+                className="absolute inset-0 bg-[repeating-linear-gradient(to_right,transparent_0,transparent_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_var(--tick))]"
+                style={{ "--tick": `${Math.max(zoom, 8)}px` } as CSSProperties}
+              />
+              {hoverSeconds === null ? null : (
+                <div
+                  className="absolute top-0 h-full w-px bg-primary/35"
+                  style={{ left: hoverSeconds * zoom }}
+                />
+              )}
+              <div
+                className="absolute top-0 h-full w-px bg-primary"
+                style={{ left: playheadSeconds * zoom }}
+              />
+            </div>
             <div
-              className="pointer-events-none absolute top-8 bottom-0 w-px bg-primary/25"
-              style={{ left: hoverSeconds * zoom }}
+              className="absolute top-8 bottom-0 w-px bg-primary"
+              style={{ left: playheadSeconds * zoom }}
             />
-          )}
-          {project.clips.map((clip) => {
-            const asset = project.sourceAssets.find(
-              (item) => item.id === clip.sourceAssetId
-            )
-            const connected = Boolean(runtimeAssets[clip.sourceAssetId])
-
-            return (
-              <TimelineItem
-                key={clip.id}
-                top={48}
-                left={clip.timelineStartSeconds * zoom}
-                width={Math.max(28, getClipDuration(clip) * zoom)}
-                selected={selection.type === "clip" && selection.id === clip.id}
-                label={asset?.name ?? "Missing video"}
-                muted={clip.muted}
-                connected={connected}
-                onSelect={() => onSelect({ type: "clip", id: clip.id })}
-                onMove={(deltaSeconds) =>
-                  onClipChange(clip.id, {
-                    timelineStartSeconds: Math.max(
-                      0,
-                      clip.timelineStartSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                onTrimStart={(deltaSeconds) =>
-                  onClipChange(clip.id, {
-                    sourceStartSeconds: Math.min(
-                      clip.sourceStartSeconds + deltaSeconds,
-                      clip.sourceEndSeconds - 0.2
-                    ),
-                    timelineStartSeconds: Math.max(
-                      0,
-                      clip.timelineStartSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                onTrimEnd={(deltaSeconds) =>
-                  onClipChange(clip.id, {
-                    sourceEndSeconds: Math.max(
-                      clip.sourceStartSeconds + 0.2,
-                      clip.sourceEndSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                zoom={zoom}
+            {hoverSeconds === null ? null : (
+              <div
+                className="pointer-events-none absolute top-8 bottom-0 w-px bg-primary/25"
+                style={{ left: hoverSeconds * zoom }}
               />
-            )
-          })}
-          {project.musicTracks.map((track) => {
-            const asset = project.sourceAssets.find(
-              (item) => item.id === track.sourceAssetId
-            )
-            const connected = Boolean(runtimeAssets[track.sourceAssetId])
+            )}
+            {project.clips.map((clip) => {
+              const asset = project.sourceAssets.find(
+                (item) => item.id === clip.sourceAssetId
+              )
+              const connected = Boolean(runtimeAssets[clip.sourceAssetId])
 
-            return (
-              <TimelineItem
-                key={track.id}
-                top={126}
-                left={track.timelineStartSeconds * zoom}
-                width={Math.max(28, getClipDuration(track) * zoom)}
-                selected={
-                  selection.type === "music" && selection.id === track.id
-                }
-                label={asset?.name ?? "Missing audio"}
-                muted={false}
-                connected={connected}
-                onSelect={() => onSelect({ type: "music", id: track.id })}
-                onMove={(deltaSeconds) =>
-                  onMusicChange(track.id, {
-                    timelineStartSeconds: Math.max(
-                      0,
-                      track.timelineStartSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                onTrimStart={(deltaSeconds) =>
-                  onMusicChange(track.id, {
-                    sourceStartSeconds: Math.min(
-                      track.sourceStartSeconds + deltaSeconds,
-                      track.sourceEndSeconds - 0.2
-                    ),
-                    timelineStartSeconds: Math.max(
-                      0,
-                      track.timelineStartSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                onTrimEnd={(deltaSeconds) =>
-                  onMusicChange(track.id, {
-                    sourceEndSeconds: Math.max(
-                      track.sourceStartSeconds + 0.2,
-                      track.sourceEndSeconds + deltaSeconds
-                    ),
-                  })
-                }
-                zoom={zoom}
-              />
-            )
-          })}
+              return (
+                <TimelineItem
+                  key={clip.id}
+                  top={48}
+                  left={clip.timelineStartSeconds * zoom}
+                  width={Math.max(28, getClipDuration(clip) * zoom)}
+                  selected={
+                    selection.type === "clip" && selection.id === clip.id
+                  }
+                  label={asset?.name ?? "Missing video"}
+                  muted={clip.muted}
+                  connected={connected}
+                  onSelect={() => onSelect({ type: "clip", id: clip.id })}
+                  onMove={(deltaSeconds) =>
+                    onClipChange(clip.id, {
+                      timelineStartSeconds: Math.max(
+                        0,
+                        clip.timelineStartSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  onTrimStart={(deltaSeconds) =>
+                    onClipChange(clip.id, {
+                      sourceStartSeconds: Math.min(
+                        clip.sourceStartSeconds + deltaSeconds,
+                        clip.sourceEndSeconds - 0.2
+                      ),
+                      timelineStartSeconds: Math.max(
+                        0,
+                        clip.timelineStartSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  onTrimEnd={(deltaSeconds) =>
+                    onClipChange(clip.id, {
+                      sourceEndSeconds: Math.max(
+                        clip.sourceStartSeconds + 0.2,
+                        clip.sourceEndSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  zoom={zoom}
+                />
+              )
+            })}
+            {project.musicTracks.map((track) => {
+              const asset = project.sourceAssets.find(
+                (item) => item.id === track.sourceAssetId
+              )
+              const connected = Boolean(runtimeAssets[track.sourceAssetId])
+
+              return (
+                <TimelineItem
+                  key={track.id}
+                  top={126}
+                  left={track.timelineStartSeconds * zoom}
+                  width={Math.max(28, getClipDuration(track) * zoom)}
+                  selected={
+                    selection.type === "music" && selection.id === track.id
+                  }
+                  label={asset?.name ?? "Missing audio"}
+                  muted={false}
+                  connected={connected}
+                  onSelect={() => onSelect({ type: "music", id: track.id })}
+                  onMove={(deltaSeconds) =>
+                    onMusicChange(track.id, {
+                      timelineStartSeconds: Math.max(
+                        0,
+                        track.timelineStartSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  onTrimStart={(deltaSeconds) =>
+                    onMusicChange(track.id, {
+                      sourceStartSeconds: Math.min(
+                        track.sourceStartSeconds + deltaSeconds,
+                        track.sourceEndSeconds - 0.2
+                      ),
+                      timelineStartSeconds: Math.max(
+                        0,
+                        track.timelineStartSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  onTrimEnd={(deltaSeconds) =>
+                    onMusicChange(track.id, {
+                      sourceEndSeconds: Math.max(
+                        track.sourceStartSeconds + 0.2,
+                        track.sourceEndSeconds + deltaSeconds
+                      ),
+                    })
+                  }
+                  zoom={zoom}
+                />
+              )
+            })}
+          </div>
         </div>
       </div>
     </section>
@@ -1774,7 +1688,7 @@ function TrackLabel({
 }) {
   return (
     <div
-      className="sticky left-0 z-20 ml-2 flex w-20 items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground"
+      className="absolute left-2 z-20 flex w-[72px] items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground"
       style={{ top }}
     >
       {icon}
@@ -1852,41 +1766,8 @@ function findClipAtTime(clips: TimelineClip[], seconds: number) {
     const start = clip.timelineStartSeconds
     const end = clip.timelineStartSeconds + getClipDuration(clip)
 
-    return seconds >= start && seconds <= end
+    return seconds >= start && seconds < end
   })
-}
-
-function getNextPlayableClip(
-  clips: TimelineClip[],
-  currentClip: TimelineClip,
-  runtimeAssets: RuntimeAssetMap
-) {
-  const currentIndex = clips.findIndex((clip) => clip.id === currentClip.id)
-
-  return clips
-    .slice(currentIndex + 1)
-    .find((clip) => runtimeAssets[clip.sourceAssetId])
-}
-
-function getPlayableClipAtOrAfter(
-  clips: TimelineClip[],
-  seconds: number,
-  runtimeAssets: RuntimeAssetMap
-) {
-  return clips.find((clip) => {
-    if (!runtimeAssets[clip.sourceAssetId]) {
-      return false
-    }
-
-    return clip.timelineStartSeconds + getClipDuration(clip) >= seconds
-  })
-}
-
-function getFirstPlayableClip(
-  clips: TimelineClip[],
-  runtimeAssets: RuntimeAssetMap
-) {
-  return clips.find((clip) => runtimeAssets[clip.sourceAssetId])
 }
 
 function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
@@ -1951,21 +1832,6 @@ function waitForVideoSeek(video: HTMLVideoElement) {
   })
 }
 
-function getVideoDebugInfo(video: HTMLVideoElement) {
-  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
-    return `no video frame · ready ${video.readyState}`
-  }
-
-  return `${video.videoWidth}x${video.videoHeight} · ready ${video.readyState}`
-}
-
-function getVideoLayoutInfo(video: HTMLVideoElement) {
-  const rect = video.getBoundingClientRect()
-  const style = window.getComputedStyle(video)
-
-  return `rect ${Math.round(rect.width)}x${Math.round(rect.height)} · display ${style.display} · opacity ${style.opacity} · visibility ${style.visibility} · z ${style.zIndex}`
-}
-
 function getTimelineSeconds(
   container: HTMLDivElement,
   clientX: number,
@@ -1984,6 +1850,22 @@ function getSliderValue(value: number | readonly number[], fallback: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function isTextEditingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  const tagName = target.tagName.toLowerCase()
+
+  return (
+    target.isContentEditable ||
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select" ||
+    target.getAttribute("role") === "textbox"
+  )
 }
 
 function mergeRuntimeAssets(
