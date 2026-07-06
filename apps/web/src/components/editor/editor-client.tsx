@@ -259,16 +259,19 @@ export function EditorClient() {
       return
     }
 
-    setRuntimeAssets((current) =>
-      mergeRuntimeAssets(current, nextRuntimeAssets)
-    )
-    setProject({
+    const nextProject = {
       ...project,
       sourceAssets: [...project.sourceAssets, ...importedAssets],
       clips: [...project.clips, ...importedClips],
       musicTracks: [...project.musicTracks, ...importedTracks],
       updatedAt: Date.now(),
-    })
+    }
+
+    setRuntimeAssets((current) =>
+      mergeRuntimeAssets(current, nextRuntimeAssets)
+    )
+    setProject(nextProject)
+    await saveProject(nextProject)
     setStatus(
       `Imported ${importedAssets.length} local file${
         importedAssets.length === 1 ? "" : "s"
@@ -410,7 +413,7 @@ export function EditorClient() {
     setRuntimeAssets((current) =>
       mergeRuntimeAssets(current, { [assetId]: createRuntimeAsset(file) })
     )
-    setProject({
+    const nextProject = {
       ...project,
       sourceAssets: project.sourceAssets.map((item) =>
         item.id === assetId
@@ -421,7 +424,10 @@ export function EditorClient() {
           : item
       ),
       updatedAt: Date.now(),
-    })
+    }
+
+    setProject(nextProject)
+    await saveProject(nextProject)
     setStatus(
       `Reconnected ${asset.name}${
         fileHandle ? " with persistent access" : " for this session"
@@ -648,7 +654,11 @@ function InspectorPanel({
   }
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
-  onReconnect: (assetId: string, file: File) => void
+  onReconnect: (
+    assetId: string,
+    file: File,
+    fileHandle?: FileSystemFileHandle
+  ) => void
   onRestoreSavedAccess: () => void
   onCancelExport: () => void
 }) {
@@ -659,6 +669,8 @@ function InspectorPanel({
       !asset.fileHandle &&
       !missingAssets.some((missing) => missing.id === asset.id)
   )
+  const supportsPersistentHandles =
+    typeof window !== "undefined" && "showOpenFilePicker" in window
 
   return (
     <aside className="flex min-h-0 flex-col overflow-y-auto border-r bg-muted/25 p-3">
@@ -772,6 +784,13 @@ function InspectorPanel({
               still granted. If the browser asks again, approve access here.
             </p>
           </div>
+          <Badge
+            variant={supportsPersistentHandles ? "outline" : "destructive"}
+          >
+            {supportsPersistentHandles
+              ? "Persistent file handles supported"
+              : "This browser only supports session files"}
+          </Badge>
           {missingAssets.length === 0 ? (
             <Badge variant="outline">All imported files connected</Badge>
           ) : (
@@ -950,7 +969,6 @@ function PreviewStage({
   onPlayheadChange: (seconds: number) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
   const [previewIssue, setPreviewIssue] = useState<string | null>(null)
@@ -1016,7 +1034,6 @@ function PreviewStage({
         )
       } else {
         setPreviewIssue(null)
-        drawPreviewFrame(player, canvasRef.current)
       }
       setPreviewInfo(getVideoDebugInfo(player))
     }
@@ -1075,7 +1092,6 @@ function PreviewStage({
             ? "The audio can play, but this browser is not exposing a decodable video track for this file."
             : null
         )
-        drawPreviewFrame(player, canvasRef.current)
         setPreviewInfo(getVideoDebugInfo(player))
         await player.play().catch(() => undefined)
       } else {
@@ -1096,7 +1112,6 @@ function PreviewStage({
       }
 
       const now = performance.now()
-      drawPreviewFrame(player, canvasRef.current)
 
       if (now - lastTimelineUpdate > 33) {
         lastTimelineUpdate = now
@@ -1135,16 +1150,11 @@ function PreviewStage({
         <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-lg border bg-black">
           {runtimeAsset ? (
             <>
-              <canvas
-                ref={canvasRef}
-                className="h-full w-full bg-black"
-                width={1920}
-                height={1080}
-              />
               <video
                 ref={videoRef}
                 src={runtimeAsset.objectUrl}
-                className="pointer-events-none absolute top-2 left-2 size-1 opacity-0"
+                className="h-full w-full bg-black object-contain"
+                controls
                 playsInline
                 preload="auto"
                 onError={() =>
@@ -1160,7 +1170,6 @@ function PreviewStage({
                       : null
                   )
                   setPreviewInfo(getVideoDebugInfo(video))
-                  drawPreviewFrame(video, canvasRef.current)
                 }}
               />
               <div className="absolute top-3 left-3 rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] text-white/75">
@@ -1756,35 +1765,6 @@ function waitForVideoSeek(video: HTMLVideoElement) {
     video.addEventListener("seeked", onSeeked, { once: true })
     video.addEventListener("error", onError, { once: true })
   })
-}
-
-function drawPreviewFrame(
-  video: HTMLVideoElement,
-  canvas: HTMLCanvasElement | null
-) {
-  if (!canvas || video.videoWidth <= 0 || video.videoHeight <= 0) {
-    return
-  }
-
-  const context = canvas.getContext("2d")
-
-  if (!context) {
-    return
-  }
-
-  context.fillStyle = "#000"
-  context.fillRect(0, 0, canvas.width, canvas.height)
-
-  const videoRatio = video.videoWidth / video.videoHeight
-  const canvasRatio = canvas.width / canvas.height
-  const drawWidth =
-    videoRatio > canvasRatio ? canvas.width : canvas.height * videoRatio
-  const drawHeight =
-    videoRatio > canvasRatio ? canvas.width / videoRatio : canvas.height
-  const x = (canvas.width - drawWidth) / 2
-  const y = (canvas.height - drawHeight) / 2
-
-  context.drawImage(video, x, y, drawWidth, drawHeight)
 }
 
 function getVideoDebugInfo(video: HTMLVideoElement) {
