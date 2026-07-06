@@ -389,6 +389,7 @@ export function EditorClient() {
           <Button
             variant="ghost"
             size="icon"
+            nativeButton={false}
             render={<Link href="/projects" />}
             aria-label="Back to projects"
           >
@@ -681,6 +682,7 @@ function InspectorPanel({
           {exportState.url ? (
             <Button
               className="w-full"
+              nativeButton={false}
               render={
                 <a
                   href={exportState.url}

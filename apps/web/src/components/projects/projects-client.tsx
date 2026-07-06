@@ -162,7 +162,10 @@ export function ProjectsClient() {
                   >
                     <Trash2 />
                   </Button>
-                  <Button render={<Link href={`/projects/${project.id}`} />}>
+                  <Button
+                    nativeButton={false}
+                    render={<Link href={`/projects/${project.id}`} />}
+                  >
                     Open
                     <ArrowRight data-icon="inline-end" />
                   </Button>

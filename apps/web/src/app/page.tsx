@@ -18,7 +18,7 @@ export default function Page() {
         </Link>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <Button render={<Link href="/projects" />}>
+          <Button nativeButton={false} render={<Link href="/projects" />}>
             Open projects
             <ArrowRight data-icon="inline-end" />
           </Button>
@@ -41,13 +41,18 @@ export default function Page() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="lg" render={<Link href="/projects" />}>
+            <Button
+              size="lg"
+              nativeButton={false}
+              render={<Link href="/projects" />}
+            >
               Start editing
               <ArrowRight data-icon="inline-end" />
             </Button>
             <Button
               size="lg"
               variant="outline"
+              nativeButton={false}
               render={<Link href="/projects" />}
             >
               View projects
