@@ -15,16 +15,25 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react"
-import type { ChangeEvent, DragEvent, PointerEvent, ReactNode } from "react"
-import { useEffect, useRef, useState } from "react"
+import type {
+  CSSProperties,
+  ChangeEvent,
+  DragEvent,
+  PointerEvent,
+  ReactNode,
+} from "react"
+import type { WheelEvent } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
 import { exportProjectToWebM } from "@/lib/editor/export-webm"
 import {
   chooseLocalFiles,
   createRuntimeAsset,
+  getDroppedLocalFiles,
   getFileKind,
   readMediaMetadata,
+  requestPersistentStorage,
   restoreProjectFileHandles,
 } from "@/lib/editor/media"
 import {
@@ -90,6 +99,7 @@ export function EditorClient() {
 
       setProject(loadedProject)
       setStatus("Project metadata loaded locally")
+      requestPersistentStorage().catch(() => false)
 
       restoreSavedFileHandles(loadedProject, false)
     })
@@ -285,9 +295,16 @@ export function EditorClient() {
     }
   }
 
-  function importFromDrop(event: DragEvent<HTMLElement>) {
+  async function importFromDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault()
-    importFiles(Array.from(event.dataTransfer.files))
+    const dropped = await getDroppedLocalFiles(event.dataTransfer)
+
+    await importFiles(
+      dropped.map((item) => item.file),
+      Object.fromEntries(
+        dropped.map((item) => [item.file.name, item.fileHandle])
+      )
+    )
   }
 
   function allowDrop(event: DragEvent<HTMLElement>) {
@@ -855,11 +872,27 @@ function PreviewStage({
   onPlayheadChange: (seconds: number) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const activeObjectUrlRef = useRef<string | null>(null)
+  const playheadRef = useRef(playheadSeconds)
+  const sortedClips = useMemo(
+    () =>
+      [...project.clips].sort(
+        (a, b) => a.timelineStartSeconds - b.timelineStartSeconds
+      ),
+    [project.clips]
+  )
   const activeClip =
-    selectedClip ?? findClipAtTime(project.clips, playheadSeconds)
+    findClipAtTime(sortedClips, playheadSeconds) ?? selectedClip
   const runtimeAsset = activeClip
     ? runtimeAssets[activeClip.sourceAssetId]
     : undefined
+  const hasPlayableClip = sortedClips.some(
+    (clip) => runtimeAssets[clip.sourceAssetId]
+  )
+
+  useEffect(() => {
+    playheadRef.current = playheadSeconds
+  }, [playheadSeconds])
 
   useEffect(() => {
     const video = videoRef.current
@@ -868,28 +901,75 @@ function PreviewStage({
       return
     }
 
-    video.src = runtimeAsset.objectUrl
-    video.currentTime = Math.max(
-      activeClip.sourceStartSeconds,
-      activeClip.sourceStartSeconds +
-        Math.max(0, playheadSeconds - activeClip.timelineStartSeconds)
-    )
-    video.volume = activeClip.muted ? 0 : activeClip.volume
+    const player = video
+    const clip = activeClip
+    const asset = runtimeAsset
+    const targetTime = getSourceTimeForPlayhead(clip, playheadSeconds)
+    let cancelled = false
+
+    async function syncVideo() {
+      if (activeObjectUrlRef.current !== asset.objectUrl) {
+        player.src = asset.objectUrl
+        activeObjectUrlRef.current = asset.objectUrl
+        await waitForVideoMetadata(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      player.volume = clip.muted ? 0 : clip.volume
+
+      if (Number.isFinite(targetTime)) {
+        player.currentTime = targetTime
+      }
+    }
+
+    syncVideo().catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
   }, [activeClip, playheadSeconds, runtimeAsset])
 
   useEffect(() => {
     const video = videoRef.current
 
-    if (!video || !activeClip) {
+    if (!video || !activeClip || !runtimeAsset) {
+      if (isPlaying) {
+        const firstPlayableClip = sortedClips.find(
+          (clip) => runtimeAssets[clip.sourceAssetId]
+        )
+
+        if (firstPlayableClip) {
+          onPlayheadChange(firstPlayableClip.timelineStartSeconds)
+        } else {
+          onPlayChange(false)
+        }
+      }
       return
     }
 
     const player = video
     const clip = activeClip
+    const asset = runtimeAsset
+    let cancelled = false
     let frame = 0
 
     async function syncPlayback() {
       if (isPlaying) {
+        if (activeObjectUrlRef.current !== asset.objectUrl) {
+          player.src = asset.objectUrl
+          activeObjectUrlRef.current = asset.objectUrl
+          await waitForVideoMetadata(player)
+        }
+
+        if (cancelled) {
+          return
+        }
+
+        player.volume = clip.muted ? 0 : clip.volume
+        player.currentTime = getSourceTimeForPlayhead(clip, playheadRef.current)
         await player.play().catch(() => undefined)
       } else {
         player.pause()
@@ -898,7 +978,13 @@ function PreviewStage({
 
     function tick() {
       if (player.currentTime >= clip.sourceEndSeconds) {
-        onPlayChange(false)
+        const nextClip = getNextPlayableClip(sortedClips, clip, runtimeAssets)
+
+        if (nextClip) {
+          onPlayheadChange(nextClip.timelineStartSeconds)
+        } else {
+          onPlayChange(false)
+        }
         return
       }
 
@@ -914,8 +1000,19 @@ function PreviewStage({
       frame = requestAnimationFrame(tick)
     }
 
-    return () => cancelAnimationFrame(frame)
-  }, [activeClip, isPlaying, onPlayChange, onPlayheadChange])
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(frame)
+    }
+  }, [
+    activeClip,
+    isPlaying,
+    onPlayChange,
+    onPlayheadChange,
+    runtimeAsset,
+    runtimeAssets,
+    sortedClips,
+  ])
 
   return (
     <section className="grid min-h-0 grid-rows-[1fr_auto] bg-background">
@@ -943,7 +1040,7 @@ function PreviewStage({
             size="icon"
             onClick={() => onPlayChange(!isPlaying)}
             aria-label={isPlaying ? "Pause" : "Play"}
-            disabled={!runtimeAsset}
+            disabled={!hasPlayableClip}
           >
             {isPlaying ? <Pause /> : <Play />}
           </Button>
@@ -984,11 +1081,67 @@ function Timeline({
   const duration = Math.max(12, getProjectDuration(project) + 3)
   const width = duration * zoom
   const timelineRef = useRef<HTMLDivElement>(null)
+  const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
+
+  function getSecondsFromPointer(event: PointerEvent<HTMLDivElement>) {
+    return getTimelineSeconds(
+      event.currentTarget,
+      event.clientX,
+      zoom,
+      duration
+    )
+  }
 
   function seekFromPointer(event: PointerEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect()
-    const x = event.clientX - rect.left + event.currentTarget.scrollLeft
-    onPlayheadChange(Math.max(0, x / zoom))
+    onPlayheadChange(getSecondsFromPointer(event))
+  }
+
+  function updateHover(event: PointerEvent<HTMLDivElement>) {
+    setHoverSeconds(getSecondsFromPointer(event))
+  }
+
+  function zoomFromWheel(event: WheelEvent<HTMLDivElement>) {
+    const container = timelineRef.current
+
+    if (!container) {
+      return
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault()
+
+      const secondsAtCursor = getTimelineSeconds(
+        container,
+        event.clientX,
+        zoom,
+        duration
+      )
+      const direction = event.deltaY > 0 ? -1 : 1
+      const nextZoom = clamp(
+        zoom + direction * Math.max(4, zoom * 0.12),
+        24,
+        220
+      )
+
+      onZoomChange(nextZoom)
+
+      requestAnimationFrame(() => {
+        container.scrollLeft =
+          secondsAtCursor * nextZoom -
+          (event.clientX - container.getBoundingClientRect().left)
+      })
+
+      return
+    }
+
+    if (Math.abs(event.deltaX) > 0) {
+      return
+    }
+
+    if (event.shiftKey || Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      event.preventDefault()
+      container.scrollLeft += event.deltaY
+    }
   }
 
   return (
@@ -1018,9 +1171,22 @@ function Timeline({
         ref={timelineRef}
         className="h-[205px] overflow-auto"
         onPointerDown={seekFromPointer}
+        onPointerMove={updateHover}
+        onPointerLeave={() => setHoverSeconds(null)}
+        onWheel={zoomFromWheel}
       >
         <div className="relative min-h-full" style={{ width }}>
           <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
+            <div
+              className="absolute inset-0 bg-[repeating-linear-gradient(to_right,transparent_0,transparent_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_calc(var(--tick)-1px),color-mix(in_oklch,var(--border),transparent_20%)_var(--tick))]"
+              style={{ "--tick": `${zoom}px` } as CSSProperties}
+            />
+            {hoverSeconds === null ? null : (
+              <div
+                className="absolute top-0 h-full w-px bg-primary/35"
+                style={{ left: hoverSeconds * zoom }}
+              />
+            )}
             <div
               className="absolute top-0 h-full w-px bg-primary"
               style={{ left: playheadSeconds * zoom }}
@@ -1040,6 +1206,12 @@ function Timeline({
             className="absolute top-8 bottom-0 w-px bg-primary"
             style={{ left: playheadSeconds * zoom }}
           />
+          {hoverSeconds === null ? null : (
+            <div
+              className="pointer-events-none absolute top-8 bottom-0 w-px bg-primary/25"
+              style={{ left: hoverSeconds * zoom }}
+            />
+          )}
           {project.clips.map((clip) => {
             const asset = project.sourceAssets.find(
               (item) => item.id === clip.sourceAssetId
@@ -1330,8 +1502,72 @@ function findClipAtTime(clips: TimelineClip[], seconds: number) {
   })
 }
 
+function getNextPlayableClip(
+  clips: TimelineClip[],
+  currentClip: TimelineClip,
+  runtimeAssets: RuntimeAssetMap
+) {
+  const currentIndex = clips.findIndex((clip) => clip.id === currentClip.id)
+
+  return clips
+    .slice(currentIndex + 1)
+    .find((clip) => runtimeAssets[clip.sourceAssetId])
+}
+
+function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
+  const clipOffset = clamp(
+    playheadSeconds - clip.timelineStartSeconds,
+    0,
+    getClipDuration(clip)
+  )
+
+  return clip.sourceStartSeconds + clipOffset
+}
+
+function waitForVideoMetadata(video: HTMLVideoElement) {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    function cleanup() {
+      video.removeEventListener("loadedmetadata", onLoadedMetadata)
+      video.removeEventListener("error", onError)
+    }
+
+    function onLoadedMetadata() {
+      cleanup()
+      resolve()
+    }
+
+    function onError() {
+      cleanup()
+      reject(new Error("Could not load video metadata"))
+    }
+
+    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true })
+    video.addEventListener("error", onError, { once: true })
+  })
+}
+
+function getTimelineSeconds(
+  container: HTMLDivElement,
+  clientX: number,
+  zoom: number,
+  duration: number
+) {
+  const rect = container.getBoundingClientRect()
+  const x = clientX - rect.left + container.scrollLeft
+
+  return clamp(x / zoom, 0, duration)
+}
+
 function getSliderValue(value: number | readonly number[], fallback: number) {
   return Array.isArray(value) ? (value[0] ?? fallback) : value
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function mergeRuntimeAssets(

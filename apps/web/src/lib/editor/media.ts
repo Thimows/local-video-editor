@@ -81,6 +81,57 @@ export async function chooseLocalFiles(accept: string) {
   return []
 }
 
+export async function getDroppedLocalFiles(dataTransfer: DataTransfer) {
+  const droppedFiles: LocalFileSelection[] = []
+
+  if (dataTransfer.items.length > 0) {
+    for (const item of Array.from(dataTransfer.items)) {
+      if (item.kind !== "file") {
+        continue
+      }
+
+      const handle = item.getAsFileSystemHandle
+        ? await item.getAsFileSystemHandle()
+        : null
+
+      if (handle?.getFile) {
+        droppedFiles.push({
+          file: await handle.getFile(),
+          fileHandle: handle,
+        })
+        continue
+      }
+
+      const file = item.getAsFile()
+
+      if (file) {
+        droppedFiles.push({ file })
+      }
+    }
+  }
+
+  if (droppedFiles.length > 0) {
+    return droppedFiles
+  }
+
+  return Array.from(dataTransfer.files).map((file): LocalFileSelection => ({
+    file,
+  }))
+}
+
+type LocalFileSelection = {
+  file: File
+  fileHandle?: FileSystemFileHandle
+}
+
+export async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) {
+    return false
+  }
+
+  return navigator.storage.persist()
+}
+
 export function createRuntimeAsset(file: File) {
   return {
     file,
