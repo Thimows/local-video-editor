@@ -614,7 +614,6 @@ export function EditorClient() {
             project={project}
             runtimeAssets={runtimeAssets}
             playheadSeconds={playheadSeconds}
-            selectedClip={selectedClip}
             isPlaying={isPlaying}
             onPlayChange={setIsPlaying}
             onPlayheadChange={setPlayheadSeconds}
@@ -967,7 +966,6 @@ function PreviewStage({
   project,
   runtimeAssets,
   playheadSeconds,
-  selectedClip,
   isPlaying,
   onPlayChange,
   onPlayheadChange,
@@ -975,7 +973,6 @@ function PreviewStage({
   project: Project
   runtimeAssets: RuntimeAssetMap
   playheadSeconds: number
-  selectedClip: TimelineClip | null
   isPlaying: boolean
   onPlayChange: (isPlaying: boolean) => void
   onPlayheadChange: (seconds: number) => void
@@ -985,6 +982,7 @@ function PreviewStage({
   const playheadRef = useRef(playheadSeconds)
   const [previewIssue, setPreviewIssue] = useState<string | null>(null)
   const [previewInfo, setPreviewInfo] = useState("No video connected")
+  const [layoutInfo, setLayoutInfo] = useState("layout pending")
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -993,7 +991,10 @@ function PreviewStage({
     [project.clips]
   )
   const clipAtPlayhead = findClipAtTime(sortedClips, playheadSeconds)
-  const activeClip = clipAtPlayhead ?? (isPlaying ? null : selectedClip)
+  const activeClip =
+    clipAtPlayhead ??
+    getPlayableClipAtOrAfter(sortedClips, playheadSeconds, runtimeAssets) ??
+    getFirstPlayableClip(sortedClips, runtimeAssets)
   const runtimeAsset = activeClip
     ? runtimeAssets[activeClip.sourceAssetId]
     : undefined
@@ -1048,6 +1049,7 @@ function PreviewStage({
         setPreviewIssue(null)
       }
       setPreviewInfo(getVideoDebugInfo(player))
+      setLayoutInfo(getVideoLayoutInfo(player))
     }
 
     syncVideo().catch(() => undefined)
@@ -1105,6 +1107,7 @@ function PreviewStage({
             : null
         )
         setPreviewInfo(getVideoDebugInfo(player))
+        setLayoutInfo(getVideoLayoutInfo(player))
         await player.play().catch(() => undefined)
       } else {
         player.pause()
@@ -1160,8 +1163,8 @@ function PreviewStage({
     <section className="grid min-h-0 grid-rows-[1fr_auto] bg-background">
       <div className="grid place-items-center p-4">
         <div
-          className="relative w-full max-w-5xl overflow-hidden rounded-lg border bg-black"
-          style={{ aspectRatio: "16 / 9" }}
+          className="relative w-full max-w-5xl overflow-hidden rounded-lg border-2 border-fuchsia-500 bg-[repeating-conic-gradient(#111_0_25%,#333_0_50%)_50%/24px_24px]"
+          style={{ aspectRatio: "16 / 9", minHeight: 320 }}
         >
           {runtimeAsset ? (
             <>
@@ -1190,10 +1193,17 @@ function PreviewStage({
                       : null
                   )
                   setPreviewInfo(getVideoDebugInfo(video))
+                  setLayoutInfo(getVideoLayoutInfo(video))
                 }}
               />
               <div className="absolute top-3 left-3 rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] text-white/75">
                 {previewInfo}
+              </div>
+              <div className="absolute bottom-3 left-3 max-w-[70%] rounded-md border border-white/15 bg-black/70 px-2 py-1 font-mono text-[11px] leading-4 text-white/75">
+                {layoutInfo}
+              </div>
+              <div className="absolute top-3 right-3 rounded-md border border-fuchsia-300/50 bg-fuchsia-950/80 px-2 py-1 text-[11px] font-medium text-white">
+                video bounds
               </div>
               {previewIssue ? (
                 <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
@@ -1728,6 +1738,13 @@ function getPlayableClipAtOrAfter(
   })
 }
 
+function getFirstPlayableClip(
+  clips: TimelineClip[],
+  runtimeAssets: RuntimeAssetMap
+) {
+  return clips.find((clip) => runtimeAssets[clip.sourceAssetId])
+}
+
 function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
   const clipOffset = clamp(
     playheadSeconds - clip.timelineStartSeconds,
@@ -1796,6 +1813,13 @@ function getVideoDebugInfo(video: HTMLVideoElement) {
   }
 
   return `${video.videoWidth}x${video.videoHeight} · ready ${video.readyState}`
+}
+
+function getVideoLayoutInfo(video: HTMLVideoElement) {
+  const rect = video.getBoundingClientRect()
+  const style = window.getComputedStyle(video)
+
+  return `rect ${Math.round(rect.width)}x${Math.round(rect.height)} · display ${style.display} · opacity ${style.opacity} · visibility ${style.visibility} · z ${style.zIndex}`
 }
 
 function getTimelineSeconds(
