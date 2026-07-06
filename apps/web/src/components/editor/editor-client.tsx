@@ -22,7 +22,6 @@ import type {
   PointerEvent,
   ReactNode,
 } from "react"
-import type { WheelEvent } from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -881,8 +880,8 @@ function PreviewStage({
       ),
     [project.clips]
   )
-  const activeClip =
-    findClipAtTime(sortedClips, playheadSeconds) ?? selectedClip
+  const clipAtPlayhead = findClipAtTime(sortedClips, playheadSeconds)
+  const activeClip = clipAtPlayhead ?? (isPlaying ? null : selectedClip)
   const runtimeAsset = activeClip
     ? runtimeAssets[activeClip.sourceAssetId]
     : undefined
@@ -898,6 +897,10 @@ function PreviewStage({
     const video = videoRef.current
 
     if (!video || !activeClip || !runtimeAsset) {
+      return
+    }
+
+    if (isPlaying) {
       return
     }
 
@@ -930,19 +933,21 @@ function PreviewStage({
     return () => {
       cancelled = true
     }
-  }, [activeClip, playheadSeconds, runtimeAsset])
+  }, [activeClip, isPlaying, playheadSeconds, runtimeAsset])
 
   useEffect(() => {
     const video = videoRef.current
 
     if (!video || !activeClip || !runtimeAsset) {
       if (isPlaying) {
-        const firstPlayableClip = sortedClips.find(
-          (clip) => runtimeAssets[clip.sourceAssetId]
+        const nextPlayableClip = getPlayableClipAtOrAfter(
+          sortedClips,
+          playheadRef.current,
+          runtimeAssets
         )
 
-        if (firstPlayableClip) {
-          onPlayheadChange(firstPlayableClip.timelineStartSeconds)
+        if (nextPlayableClip) {
+          onPlayheadChange(nextPlayableClip.timelineStartSeconds)
         } else {
           onPlayChange(false)
         }
@@ -955,6 +960,7 @@ function PreviewStage({
     const asset = runtimeAsset
     let cancelled = false
     let frame = 0
+    let lastTimelineUpdate = 0
 
     async function syncPlayback() {
       if (isPlaying) {
@@ -988,9 +994,16 @@ function PreviewStage({
         return
       }
 
-      onPlayheadChange(
-        clip.timelineStartSeconds + player.currentTime - clip.sourceStartSeconds
-      )
+      const now = performance.now()
+
+      if (now - lastTimelineUpdate > 33) {
+        lastTimelineUpdate = now
+        onPlayheadChange(
+          clip.timelineStartSeconds +
+            player.currentTime -
+            clip.sourceStartSeconds
+        )
+      }
       frame = requestAnimationFrame(tick)
     }
 
@@ -1081,7 +1094,72 @@ function Timeline({
   const duration = Math.max(12, getProjectDuration(project) + 3)
   const width = duration * zoom
   const timelineRef = useRef<HTMLDivElement>(null)
+  const zoomRef = useRef(zoom)
+  const durationRef = useRef(duration)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
+
+  useEffect(() => {
+    zoomRef.current = zoom
+    durationRef.current = duration
+  }, [duration, zoom])
+
+  useEffect(() => {
+    const container = timelineRef.current
+
+    if (!container) {
+      return
+    }
+
+    const scrollContainer = container
+
+    function onWheel(event: WheelEvent) {
+      const currentZoom = zoomRef.current
+      const currentDuration = durationRef.current
+
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+
+        const secondsAtCursor = getTimelineSeconds(
+          scrollContainer,
+          event.clientX,
+          currentZoom,
+          currentDuration
+        )
+        const direction = event.deltaY > 0 ? -1 : 1
+        const nextZoom = clamp(
+          currentZoom + direction * Math.max(6, currentZoom * 0.14),
+          24,
+          260
+        )
+
+        onZoomChange(nextZoom)
+
+        requestAnimationFrame(() => {
+          scrollContainer.scrollLeft =
+            secondsAtCursor * nextZoom -
+            (event.clientX - scrollContainer.getBoundingClientRect().left)
+        })
+
+        return
+      }
+
+      const horizontalDelta =
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+          ? event.deltaX
+          : event.deltaY
+
+      if (horizontalDelta !== 0) {
+        event.preventDefault()
+        scrollContainer.scrollLeft += horizontalDelta
+      }
+    }
+
+    scrollContainer.addEventListener("wheel", onWheel, { passive: false })
+
+    return () => {
+      scrollContainer.removeEventListener("wheel", onWheel)
+    }
+  }, [onZoomChange])
 
   function getSecondsFromPointer(event: PointerEvent<HTMLDivElement>) {
     return getTimelineSeconds(
@@ -1098,50 +1176,6 @@ function Timeline({
 
   function updateHover(event: PointerEvent<HTMLDivElement>) {
     setHoverSeconds(getSecondsFromPointer(event))
-  }
-
-  function zoomFromWheel(event: WheelEvent<HTMLDivElement>) {
-    const container = timelineRef.current
-
-    if (!container) {
-      return
-    }
-
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault()
-
-      const secondsAtCursor = getTimelineSeconds(
-        container,
-        event.clientX,
-        zoom,
-        duration
-      )
-      const direction = event.deltaY > 0 ? -1 : 1
-      const nextZoom = clamp(
-        zoom + direction * Math.max(4, zoom * 0.12),
-        24,
-        220
-      )
-
-      onZoomChange(nextZoom)
-
-      requestAnimationFrame(() => {
-        container.scrollLeft =
-          secondsAtCursor * nextZoom -
-          (event.clientX - container.getBoundingClientRect().left)
-      })
-
-      return
-    }
-
-    if (Math.abs(event.deltaX) > 0) {
-      return
-    }
-
-    if (event.shiftKey || Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-      event.preventDefault()
-      container.scrollLeft += event.deltaY
-    }
   }
 
   return (
@@ -1169,11 +1203,10 @@ function Timeline({
 
       <div
         ref={timelineRef}
-        className="h-[205px] overflow-auto"
+        className="h-[205px] [touch-action:pan-x] overflow-auto overscroll-contain"
         onPointerDown={seekFromPointer}
         onPointerMove={updateHover}
         onPointerLeave={() => setHoverSeconds(null)}
-        onWheel={zoomFromWheel}
       >
         <div className="relative min-h-full" style={{ width }}>
           <div className="sticky top-0 z-10 h-8 border-b bg-card/95">
@@ -1512,6 +1545,20 @@ function getNextPlayableClip(
   return clips
     .slice(currentIndex + 1)
     .find((clip) => runtimeAssets[clip.sourceAssetId])
+}
+
+function getPlayableClipAtOrAfter(
+  clips: TimelineClip[],
+  seconds: number,
+  runtimeAssets: RuntimeAssetMap
+) {
+  return clips.find((clip) => {
+    if (!runtimeAssets[clip.sourceAssetId]) {
+      return false
+    }
+
+    return clip.timelineStartSeconds + getClipDuration(clip) >= seconds
+  })
 }
 
 function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
