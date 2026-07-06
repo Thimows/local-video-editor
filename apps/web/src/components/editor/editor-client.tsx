@@ -25,6 +25,7 @@ import {
   createRuntimeAsset,
   getFileKind,
   readMediaMetadata,
+  restoreProjectFileHandles,
 } from "@/lib/editor/media"
 import {
   formatBytes,
@@ -72,6 +73,7 @@ export function EditorClient() {
     url?: string
     controller?: AbortController
   }>({ progress: 0, message: "Idle" })
+  const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
 
   useEffect(() => {
     let active = true
@@ -88,7 +90,44 @@ export function EditorClient() {
 
       setProject(loadedProject)
       setStatus("Project metadata loaded locally")
+
+      restoreSavedFileHandles(loadedProject, false)
     })
+
+    async function restoreSavedFileHandles(
+      targetProject: Project,
+      requestPermission: boolean
+    ) {
+      const result = await restoreProjectFileHandles(
+        targetProject,
+        requestPermission
+      )
+
+      if (!active) {
+        Object.values(result.runtimeAssets).forEach((asset) =>
+          URL.revokeObjectURL(asset.objectUrl)
+        )
+        return
+      }
+
+      if (result.restoredCount > 0) {
+        setRuntimeAssets((current) =>
+          mergeRuntimeAssets(current, result.runtimeAssets)
+        )
+      }
+
+      if (result.restoredCount > 0) {
+        setStatus(
+          `Restored ${result.restoredCount} saved local file handle${
+            result.restoredCount === 1 ? "" : "s"
+          }`
+        )
+      } else if (result.permissionNeededCount > 0) {
+        setStatus("Saved file handles need permission before preview/export")
+      } else if (result.unavailableCount > 0) {
+        setStatus("Some files need manual reconnect in this browser")
+      }
+    }
 
     return () => {
       active = false
@@ -96,12 +135,16 @@ export function EditorClient() {
   }, [projectId, router])
 
   useEffect(() => {
+    runtimeAssetsRef.current = runtimeAssets
+  }, [runtimeAssets])
+
+  useEffect(() => {
     return () => {
-      Object.values(runtimeAssets).forEach((asset) =>
+      Object.values(runtimeAssetsRef.current).forEach((asset) =>
         URL.revokeObjectURL(asset.objectUrl)
       )
     }
-  }, [runtimeAssets])
+  }, [])
 
   useEffect(() => {
     if (!project) {
@@ -207,7 +250,9 @@ export function EditorClient() {
       return
     }
 
-    setRuntimeAssets((current) => ({ ...current, ...nextRuntimeAssets }))
+    setRuntimeAssets((current) =>
+      mergeRuntimeAssets(current, nextRuntimeAssets)
+    )
     setProject({
       ...project,
       sourceAssets: [...project.sourceAssets, ...importedAssets],
@@ -333,11 +378,40 @@ export function EditorClient() {
       return
     }
 
-    setRuntimeAssets((current) => ({
-      ...current,
-      [assetId]: createRuntimeAsset(file),
-    }))
+    setRuntimeAssets((current) =>
+      mergeRuntimeAssets(current, { [assetId]: createRuntimeAsset(file) })
+    )
     setStatus(`Reconnected ${asset.name}`)
+  }
+
+  async function restoreSavedAccess() {
+    if (!project) {
+      return
+    }
+
+    const result = await restoreProjectFileHandles(project, true)
+
+    if (result.restoredCount > 0) {
+      setRuntimeAssets((current) =>
+        mergeRuntimeAssets(current, result.runtimeAssets)
+      )
+    } else {
+      Object.values(result.runtimeAssets).forEach((asset) =>
+        URL.revokeObjectURL(asset.objectUrl)
+      )
+    }
+
+    if (result.restoredCount > 0) {
+      setStatus(
+        `Restored ${result.restoredCount} local file${
+          result.restoredCount === 1 ? "" : "s"
+        }`
+      )
+    } else if (result.permissionNeededCount > 0) {
+      setStatus("File access was not granted")
+    } else {
+      setStatus("No saved file handles could be restored")
+    }
   }
 
   async function runExport() {
@@ -470,6 +544,7 @@ export function EditorClient() {
             onClipChange={updateClip}
             onMusicChange={updateMusic}
             onReconnect={reconnectAsset}
+            onRestoreSavedAccess={restoreSavedAccess}
             onCancelExport={() => exportState.controller?.abort()}
           />
           <PreviewStage
@@ -511,6 +586,7 @@ function InspectorPanel({
   onClipChange,
   onMusicChange,
   onReconnect,
+  onRestoreSavedAccess,
   onCancelExport,
 }: {
   project: Project
@@ -528,9 +604,11 @@ function InspectorPanel({
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
   onReconnect: (assetId: string, file: File) => void
+  onRestoreSavedAccess: () => void
   onCancelExport: () => void
 }) {
   const duration = getProjectDuration(project)
+  const missingSavedHandles = missingAssets.filter((asset) => asset.fileHandle)
 
   return (
     <aside className="flex min-h-0 flex-col overflow-y-auto border-r bg-muted/25 p-3">
@@ -640,20 +718,32 @@ function InspectorPanel({
           <div className="space-y-1">
             <h3 className="text-sm font-medium">Reconnect files</h3>
             <p className="text-xs leading-5 text-muted-foreground">
-              Browsers cannot silently regain file access after reloads.
-              Reconnect matching local files when needed.
+              Saved file handles are restored after reload when permission is
+              still granted. If the browser asks again, approve access here.
             </p>
           </div>
           {missingAssets.length === 0 ? (
             <Badge variant="outline">All imported files connected</Badge>
           ) : (
-            missingAssets.map((asset) => (
-              <ReconnectButton
-                key={asset.id}
-                asset={asset}
-                onReconnect={onReconnect}
-              />
-            ))
+            <div className="space-y-2">
+              {missingSavedHandles.length > 0 ? (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={onRestoreSavedAccess}
+                >
+                  <FolderOpen data-icon="inline-start" />
+                  Restore saved access
+                </Button>
+              ) : null}
+              {missingAssets.map((asset) => (
+                <ReconnectButton
+                  key={asset.id}
+                  asset={asset}
+                  onReconnect={onReconnect}
+                />
+              ))}
+            </div>
           )}
         </div>
 
@@ -1242,4 +1332,22 @@ function findClipAtTime(clips: TimelineClip[], seconds: number) {
 
 function getSliderValue(value: number | readonly number[], fallback: number) {
   return Array.isArray(value) ? (value[0] ?? fallback) : value
+}
+
+function mergeRuntimeAssets(
+  current: RuntimeAssetMap,
+  next: RuntimeAssetMap
+): RuntimeAssetMap {
+  for (const [assetId, asset] of Object.entries(next)) {
+    const currentAsset = current[assetId]
+
+    if (currentAsset && currentAsset.objectUrl !== asset.objectUrl) {
+      URL.revokeObjectURL(currentAsset.objectUrl)
+    }
+  }
+
+  return {
+    ...current,
+    ...next,
+  }
 }

@@ -17,4 +17,10 @@ interface Window {
 interface FileSystemFileHandle {
   readonly name: string
   getFile(): Promise<File>
+  queryPermission?: (descriptor?: {
+    mode?: "read" | "readwrite"
+  }) => Promise<PermissionState>
+  requestPermission?: (descriptor?: {
+    mode?: "read" | "readwrite"
+  }) => Promise<PermissionState>
 }

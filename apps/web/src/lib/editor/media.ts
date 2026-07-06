@@ -1,4 +1,4 @@
-import type { SourceAssetType } from "./types"
+import type { Project, RuntimeAssetMap, SourceAssetType } from "./types"
 
 export type MediaMetadata = {
   durationSeconds?: number
@@ -85,5 +85,55 @@ export function createRuntimeAsset(file: File) {
   return {
     file,
     objectUrl: URL.createObjectURL(file),
+  }
+}
+
+export async function restoreProjectFileHandles(
+  project: Project,
+  requestPermission = false
+) {
+  const runtimeAssets: RuntimeAssetMap = {}
+  let restoredCount = 0
+  let permissionNeededCount = 0
+  let unavailableCount = 0
+
+  for (const asset of project.sourceAssets) {
+    const handle = asset.fileHandle
+
+    if (!handle?.getFile) {
+      unavailableCount += 1
+      continue
+    }
+
+    try {
+      const currentPermission = handle.queryPermission
+        ? await handle.queryPermission({ mode: "read" })
+        : "granted"
+      const permission =
+        currentPermission === "granted" || !requestPermission
+          ? currentPermission
+          : handle.requestPermission
+            ? await handle.requestPermission({ mode: "read" })
+            : currentPermission
+
+      if (permission !== "granted") {
+        permissionNeededCount += 1
+        continue
+      }
+
+      const file = await handle.getFile()
+
+      runtimeAssets[asset.id] = createRuntimeAsset(file)
+      restoredCount += 1
+    } catch {
+      unavailableCount += 1
+    }
+  }
+
+  return {
+    runtimeAssets,
+    restoredCount,
+    permissionNeededCount,
+    unavailableCount,
   }
 }

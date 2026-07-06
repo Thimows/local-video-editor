@@ -82,8 +82,8 @@ export function ProjectsClient() {
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
                 Project metadata is saved in IndexedDB. Source videos and audio
-                stay as local file references and may need reconnecting after a
-                refresh.
+                stay as local file handles when the browser supports it, so they
+                can be restored after reload without uploading anything.
               </p>
             </div>
           </div>
