@@ -29,6 +29,14 @@ import { flushSync } from "react-dom"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { exportProjectToWebM } from "@/lib/editor/export-webm"
 import {
+  clearPreviewAudioDebug,
+  createPreviewAudioContext,
+  disconnectPreviewAudio,
+  publishPreviewAudioDebug,
+  setPreviewMediaVolume,
+  type PreviewAudioController,
+} from "@/components/editor/preview-engine/audio-preview-engine"
+import {
   chooseLocalFiles,
   createRuntimeAsset,
   getDroppedLocalFiles,
@@ -106,10 +114,6 @@ const MAX_TIMELINE_PANEL_HEIGHT = 420
 const RESIZE_GAP_SIZE = 12
 
 type InspectorView = "project" | "selection" | "files"
-type PreviewAudioController = {
-  source: MediaElementAudioSourceNode
-  gain: GainNode
-}
 
 export function EditorClient() {
   const params = useParams<{ id: string }>()
@@ -1632,7 +1636,7 @@ function PreviewStage({
     .map((clip) => previewIssues[clip.id])
     .find(Boolean)
 
-  function getPreviewAudioContext() {
+  const getPreviewAudioContext = useCallback(() => {
     if (previewAudioContextRef.current) {
       return previewAudioContextRef.current
     }
@@ -1647,7 +1651,7 @@ function PreviewStage({
     setPreviewAudioContext(nextAudioContext)
 
     return nextAudioContext
-  }
+  }, [])
 
   function togglePlayback() {
     const nextIsPlaying = !isPlaying
@@ -1686,6 +1690,7 @@ function PreviewStage({
                 isPlaying={isPlaying}
                 isActive={activeClipIds.has(clip.id)}
                 audioContext={previewAudioContext}
+                getAudioContext={getPreviewAudioContext}
                 onIssue={(issue) => setPreviewIssue(clip.id, issue)}
               />
             )
@@ -1722,6 +1727,7 @@ function PreviewStage({
                 playheadSeconds={playheadSeconds}
                 isPlaying={isPlaying}
                 audioContext={previewAudioContext}
+                getAudioContext={getPreviewAudioContext}
               />
             )
           })}
@@ -1755,6 +1761,7 @@ function PreviewVideoLayer({
   isPlaying,
   isActive,
   audioContext,
+  getAudioContext,
   onIssue,
 }: {
   clip: TimelineClip
@@ -1764,11 +1771,20 @@ function PreviewVideoLayer({
   isPlaying: boolean
   isActive: boolean
   audioContext: AudioContext | null
+  getAudioContext: () => AudioContext | null
   onIssue: (issue: string | null) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const activeAudioObjectUrlRef = useRef<string | null>(null)
   const audioControllerRef = useRef<PreviewAudioController | null>(null)
+  const clipAudioSettingsRef = useRef({
+    isActive,
+    muted: clip.muted,
+    name: asset?.name,
+    volume: clip.volume,
+  })
   const [isFrameReady, setIsFrameReady] = useState(false)
   const aspectRatio =
     asset?.width && asset.height ? asset.width / asset.height : 16 / 9
@@ -1776,9 +1792,48 @@ function PreviewVideoLayer({
   useEffect(
     () => () => {
       disconnectPreviewAudio(audioControllerRef)
+      clearPreviewAudioDebug(`clip:${clip.id}`)
     },
-    []
+    [clip.id]
   )
+
+  useEffect(() => {
+    clipAudioSettingsRef.current = {
+      isActive,
+      muted: clip.muted,
+      name: asset?.name,
+      volume: clip.volume,
+    }
+  }, [asset?.name, clip.muted, clip.volume, isActive])
+
+  const applyClipAudioVolume = useCallback(() => {
+    const player = audioRef.current
+
+    if (!player) {
+      return
+    }
+    const settings = clipAudioSettingsRef.current
+
+    const audioStatus = setPreviewMediaVolume({
+      player,
+      audioContext,
+      getAudioContext,
+      audioControllerRef,
+      volume: settings.volume,
+      muted: settings.muted || !settings.isActive,
+      maxVolume: MAX_MEDIA_VOLUME,
+    })
+    publishPreviewAudioDebug(`clip:${clip.id}`, {
+      ...audioStatus,
+      id: clip.id,
+      kind: "clip",
+      name: settings.name,
+    })
+  }, [audioContext, clip.id, getAudioContext])
+
+  useEffect(() => {
+    applyClipAudioVolume()
+  }, [applyClipAudioVolume, clip.muted, clip.volume, isActive])
 
   useEffect(() => {
     const player = videoRef.current
@@ -1788,20 +1843,20 @@ function PreviewVideoLayer({
     }
 
     const sourceChanged = activeObjectUrlRef.current !== runtimeAsset.objectUrl
-    const targetTime = getSourceTimeForTimelineItem(clip, playheadSeconds)
+    const clipTiming = {
+      sourceStartSeconds: clip.sourceStartSeconds,
+      sourceEndSeconds: clip.sourceEndSeconds,
+      timelineStartSeconds: clip.timelineStartSeconds,
+    }
+    const targetTime = getSourceTimeForTimelineItem(
+      clipTiming,
+      playheadSeconds
+    )
     const shouldPlay = isPlaying && isActive
     const shouldSeek =
       sourceChanged ||
       !shouldPlay ||
       Math.abs(player.currentTime - targetTime) > 0.25
-
-    setPreviewMediaVolume({
-      player,
-      audioContext,
-      audioControllerRef,
-      volume: clip.volume,
-      muted: clip.muted || !isActive,
-    })
 
     if (shouldPlay && !shouldSeek) {
       setIsFrameReady(true)
@@ -1822,6 +1877,7 @@ function PreviewVideoLayer({
       if (sourceChanged) {
         player.src = runtimeAsset.objectUrl
         activeObjectUrlRef.current = runtimeAsset.objectUrl
+        player.muted = true
         await waitForMediaMetadata(player)
       }
 
@@ -1863,42 +1919,135 @@ function PreviewVideoLayer({
       cancelled = true
     }
   }, [
-    clip,
-    audioContext,
     isActive,
     isPlaying,
     onIssue,
     playheadSeconds,
     runtimeAsset.objectUrl,
+    clip.sourceEndSeconds,
+    clip.sourceStartSeconds,
+    clip.timelineStartSeconds,
+  ])
+
+  useEffect(() => {
+    const player = audioRef.current
+
+    if (!player) {
+      return
+    }
+
+    const sourceChanged =
+      activeAudioObjectUrlRef.current !== runtimeAsset.objectUrl
+    const clipTiming = {
+      sourceStartSeconds: clip.sourceStartSeconds,
+      sourceEndSeconds: clip.sourceEndSeconds,
+      timelineStartSeconds: clip.timelineStartSeconds,
+    }
+    const targetTime = getSourceTimeForTimelineItem(
+      clipTiming,
+      playheadSeconds
+    )
+    const shouldPlay = isPlaying && isActive && !clip.muted
+    const shouldSeek =
+      sourceChanged ||
+      !shouldPlay ||
+      Math.abs(player.currentTime - targetTime) > 0.25
+
+    if (shouldPlay && !shouldSeek) {
+      if (player.paused) {
+        player.play().catch(() => undefined)
+      }
+      return
+    }
+
+    let cancelled = false
+
+    async function syncClipAudio() {
+      if (!player) {
+        return
+      }
+
+      if (sourceChanged) {
+        player.src = runtimeAsset.objectUrl
+        activeAudioObjectUrlRef.current = runtimeAsset.objectUrl
+        await waitForMediaMetadata(player)
+        applyClipAudioVolume()
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (
+        Number.isFinite(targetTime) &&
+        Math.abs(player.currentTime - targetTime) > 0.04
+      ) {
+        player.currentTime = targetTime
+        await waitForMediaSeek(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (shouldPlay) {
+        await player.play().catch(() => undefined)
+      } else {
+        player.pause()
+      }
+    }
+
+    syncClipAudio().catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clip.muted,
+    clip.sourceEndSeconds,
+    clip.sourceStartSeconds,
+    clip.timelineStartSeconds,
+    isActive,
+    isPlaying,
+    applyClipAudioVolume,
+    playheadSeconds,
+    runtimeAsset.objectUrl,
   ])
 
   return (
-    <video
-      ref={videoRef}
-      className={[
-        "absolute inset-0 m-auto block rounded-lg bg-card object-fill transition-opacity duration-75",
-        isActive && isFrameReady ? "opacity-100" : "opacity-0",
-      ].join(" ")}
-      style={{
-        aspectRatio: String(aspectRatio),
-        height: `min(100%, calc(100cqw / ${aspectRatio}))`,
-        width: `min(100%, calc(100cqh * ${aspectRatio}))`,
-        zIndex: getPreviewLayerZIndex(clip),
-      }}
-      playsInline
-      preload="auto"
-      onError={() =>
-        onIssue("This browser could not decode one of the active video files.")
-      }
-      onLoadedMetadata={(event) => {
-        const video = event.currentTarget
-        onIssue(
-          video.videoWidth === 0 || video.videoHeight === 0
-            ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
-            : null
-        )
-      }}
-    />
+    <>
+      <video
+        ref={videoRef}
+        className={[
+          "absolute inset-0 m-auto block rounded-lg bg-card object-fill transition-opacity duration-75",
+          isActive && isFrameReady ? "opacity-100" : "opacity-0",
+        ].join(" ")}
+        style={{
+          aspectRatio: String(aspectRatio),
+          height: `min(100%, calc(100cqw / ${aspectRatio}))`,
+          width: `min(100%, calc(100cqh * ${aspectRatio}))`,
+          zIndex: getPreviewLayerZIndex(clip),
+        }}
+        muted
+        playsInline
+        preload="auto"
+        onError={() =>
+          onIssue(
+            "This browser could not decode one of the active video files."
+          )
+        }
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget
+          video.muted = true
+          onIssue(
+            video.videoWidth === 0 || video.videoHeight === 0
+              ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
+              : null
+          )
+        }}
+      />
+      <audio ref={audioRef} preload="auto" />
+    </>
   )
 }
 
@@ -1908,23 +2057,58 @@ function PreviewAudioLayer({
   playheadSeconds,
   isPlaying,
   audioContext,
+  getAudioContext,
 }: {
   track: MusicTrack
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
   audioContext: AudioContext | null
+  getAudioContext: () => AudioContext | null
 }) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const audioControllerRef = useRef<PreviewAudioController | null>(null)
+  const trackAudioSettingsRef = useRef({ volume: track.volume })
 
   useEffect(
     () => () => {
       disconnectPreviewAudio(audioControllerRef)
+      clearPreviewAudioDebug(`music:${track.id}`)
     },
-    []
+    [track.id]
   )
+
+  useEffect(() => {
+    trackAudioSettingsRef.current = { volume: track.volume }
+  }, [track.volume])
+
+  const applyTrackAudioVolume = useCallback(() => {
+    const player = audioRef.current
+
+    if (!player) {
+      return
+    }
+
+    const audioStatus = setPreviewMediaVolume({
+      player,
+      audioContext,
+      getAudioContext,
+      audioControllerRef,
+      volume: trackAudioSettingsRef.current.volume,
+      muted: false,
+      maxVolume: MAX_MEDIA_VOLUME,
+    })
+    publishPreviewAudioDebug(`music:${track.id}`, {
+      ...audioStatus,
+      id: track.id,
+      kind: "music",
+    })
+  }, [audioContext, getAudioContext, track.id])
+
+  useEffect(() => {
+    applyTrackAudioVolume()
+  }, [applyTrackAudioVolume, track.volume])
 
   useEffect(() => {
     const player = audioRef.current
@@ -1934,19 +2118,19 @@ function PreviewAudioLayer({
     }
 
     const sourceChanged = activeObjectUrlRef.current !== runtimeAsset.objectUrl
-    const targetTime = getSourceTimeForTimelineItem(track, playheadSeconds)
+    const trackTiming = {
+      sourceStartSeconds: track.sourceStartSeconds,
+      sourceEndSeconds: track.sourceEndSeconds,
+      timelineStartSeconds: track.timelineStartSeconds,
+    }
+    const targetTime = getSourceTimeForTimelineItem(
+      trackTiming,
+      playheadSeconds
+    )
     const shouldSeek =
       sourceChanged ||
       !isPlaying ||
       Math.abs(player.currentTime - targetTime) > 0.25
-
-    setPreviewMediaVolume({
-      player,
-      audioContext,
-      audioControllerRef,
-      volume: track.volume,
-      muted: false,
-    })
 
     if (isPlaying && !shouldSeek) {
       if (player.paused) {
@@ -1966,6 +2150,7 @@ function PreviewAudioLayer({
         player.src = runtimeAsset.objectUrl
         activeObjectUrlRef.current = runtimeAsset.objectUrl
         await waitForMediaMetadata(player)
+        applyTrackAudioVolume()
       }
 
       if (cancelled) {
@@ -1996,97 +2181,17 @@ function PreviewAudioLayer({
     return () => {
       cancelled = true
     }
-  }, [audioContext, isPlaying, playheadSeconds, runtimeAsset.objectUrl, track])
+  }, [
+    isPlaying,
+    applyTrackAudioVolume,
+    playheadSeconds,
+    runtimeAsset.objectUrl,
+    track.sourceEndSeconds,
+    track.sourceStartSeconds,
+    track.timelineStartSeconds,
+  ])
 
   return <audio ref={audioRef} preload="auto" />
-}
-
-function setPreviewMediaVolume({
-  player,
-  audioContext,
-  audioControllerRef,
-  volume,
-  muted,
-}: {
-  player: HTMLMediaElement
-  audioContext: AudioContext | null
-  audioControllerRef: { current: PreviewAudioController | null }
-  volume: number
-  muted: boolean
-}) {
-  const gainValue = muted ? 0 : getMediaVolumeMultiplier(volume)
-
-  if (!audioContext) {
-    player.muted = muted
-    player.volume = Math.min(1, gainValue)
-    return
-  }
-
-  try {
-    audioControllerRef.current ??= createPreviewAudioController(
-      audioContext,
-      player
-    )
-    player.muted = false
-    player.volume = 1
-    setPreviewGain(audioControllerRef.current.gain, audioContext, gainValue)
-  } catch {
-    player.muted = muted
-    player.volume = Math.min(1, gainValue)
-  }
-}
-
-function createPreviewAudioController(
-  audioContext: AudioContext,
-  player: HTMLMediaElement
-) {
-  const source = audioContext.createMediaElementSource(player)
-  const gain = audioContext.createGain()
-
-  source.connect(gain).connect(audioContext.destination)
-
-  return { source, gain }
-}
-
-function setPreviewGain(
-  gainNode: GainNode,
-  audioContext: AudioContext,
-  value: number
-) {
-  const now = audioContext.currentTime
-
-  gainNode.gain.cancelScheduledValues(now)
-  gainNode.gain.setValueAtTime(value, now)
-}
-
-function disconnectPreviewAudio(controllerRef: {
-  current: PreviewAudioController | null
-}) {
-  const controller = controllerRef.current
-
-  controllerRef.current = null
-  controller?.source.disconnect()
-  controller?.gain.disconnect()
-}
-
-function getMediaVolumeMultiplier(volume: number) {
-  return clamp(volume, 0, MAX_MEDIA_VOLUME)
-}
-
-function createPreviewAudioContext() {
-  if (typeof window === "undefined") {
-    return null
-  }
-
-  const AudioContextConstructor =
-    window.AudioContext ??
-    (
-      window as typeof window & {
-        webkitAudioContext?: typeof AudioContext
-      }
-    ).webkitAudioContext
-
-  return AudioContextConstructor ? new AudioContextConstructor() : null
 }
 
 function clampTimelineZoom(zoom: number) {
@@ -3419,7 +3524,11 @@ function getPreviewLayerZIndex(item: TimelineItemData) {
 }
 
 function getSourceTimeForTimelineItem(
-  item: TimelineItemData,
+  item: {
+    sourceStartSeconds: number
+    sourceEndSeconds: number
+    timelineStartSeconds: number
+  },
   playheadSeconds: number
 ) {
   const itemOffset = clamp(
