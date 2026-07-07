@@ -1,4 +1,5 @@
-import { Geist, Geist_Mono } from "next/font/google"
+import { Geist } from "next/font/google"
+import localFont from "next/font/local"
 import type { Metadata } from "next"
 
 import "@workspace/ui/globals.css"
@@ -12,9 +13,10 @@ import { cn } from "@workspace/ui/lib/utils"
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" })
 
-const fontMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
+const fontPixel = localFont({
+  src: "./fonts/geist-pixel.ttf",
+  display: "swap",
+  variable: "--font-pixel",
 })
 
 export const metadata: Metadata = {
@@ -38,7 +40,7 @@ export default function RootLayout({
       suppressHydrationWarning
       className={cn(
         "antialiased",
-        fontMono.variable,
+        fontPixel.variable,
         "font-sans",
         geist.variable
       )}

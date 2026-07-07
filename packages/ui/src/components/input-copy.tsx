@@ -296,7 +296,7 @@ const InputCopy = forwardRef<HTMLDivElement, InputCopyProps>(
     const valueElement = (
       <span
         className={cn(
-          "flex-1 min-w-0 text-left text-[13px] text-foreground font-mono py-2 select-none truncate",
+          "flex-1 min-w-0 text-left text-[13px] text-foreground font-pixel py-2 select-none truncate",
           align === "left" ? "pl-1" : "pl-0"
         )}
         style={{ fontVariationSettings: fontWeights.normal }}

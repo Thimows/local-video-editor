@@ -1205,6 +1205,11 @@ export function EditorClient() {
           setExportState((current) => ({ ...current, progress, message })),
       })
       const url = URL.createObjectURL(result.blob)
+      triggerExportDownload({
+        extension: result.extension,
+        projectName: project.name,
+        url,
+      })
       setExportState({
         progress: 1,
         message: `${result.extension.toUpperCase()} export ready`,
@@ -1939,13 +1944,8 @@ function ExportDialog({
           </Button>
         }
       />
-      <DialogContent>
-        <div
-          className={[
-            "grid gap-4 transition-opacity duration-150",
-            cancelConfirmOpen && isExporting ? "opacity-50" : "opacity-100",
-          ].join(" ")}
-        >
+      <DialogContent className="overflow-hidden">
+        <div className="grid gap-4">
           <div className="space-y-1">
             <DialogTitle>Export</DialogTitle>
             <DialogDescription>
@@ -2013,18 +2013,30 @@ function ExportDialog({
               </Button>
             ) : null}
             {exportState.url ? (
-              <Button
-                nativeButton={false}
-                render={
-                  <a
-                    href={exportState.url}
-                    download={`${project.name || "export"}.${downloadExtension}`}
-                  />
-                }
-              >
-                <Download data-icon="inline-start" />
-                Download
-              </Button>
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setCancelConfirmOpen(false)
+                    onExport()
+                  }}
+                >
+                  Re-export
+                </Button>
+                <Button
+                  nativeButton={false}
+                  render={
+                    <a
+                      href={exportState.url}
+                      download={`${project.name || "export"}.${downloadExtension}`}
+                    />
+                  }
+                >
+                  <Download data-icon="inline-start" />
+                  Download
+                </Button>
+              </>
             ) : (
               <Button
                 type="button"
@@ -2040,11 +2052,17 @@ function ExportDialog({
             )}
           </div>
         </div>
+        {cancelConfirmOpen && isExporting ? (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 rounded-xl bg-background/45 backdrop-blur-sm"
+            aria-hidden="true"
+          />
+        ) : null}
         <Dialog
           open={cancelConfirmOpen && isExporting}
           onOpenChange={setCancelConfirmOpen}
         >
-          <DialogContent>
+          <DialogContent backdropClassName="z-[5002]" className="z-[5003]">
             <div className="space-y-1">
               <DialogTitle>Cancel Export?</DialogTitle>
               <DialogDescription>
@@ -2592,7 +2610,7 @@ function PreviewStage({
           >
             {isPlaying ? <Pause /> : <Play />}
           </Button>
-          <span className="font-mono text-sm text-muted-foreground">
+          <span className="font-pixel text-sm text-muted-foreground">
             {formatDuration(playheadSeconds)} /{" "}
             {formatDuration(projectDuration)}
           </span>
@@ -3823,7 +3841,7 @@ function Timeline({
               {ticks.map((seconds) => (
                 <div
                   key={seconds}
-                  className="absolute top-0 h-full border-l px-1 pt-1 font-mono text-[10px] text-muted-foreground"
+                  className="absolute top-0 h-full border-l border-border/70 px-1 pt-1 font-pixel text-[10px] text-muted-foreground"
                   style={{
                     left: `calc(${
                       TIMELINE_CONTENT_INSET_X + seconds * zoom
@@ -5736,6 +5754,24 @@ function cleanupExportResult(state: ExportUiState) {
   }
 
   state.cleanup?.().catch(() => undefined)
+}
+
+function triggerExportDownload({
+  extension,
+  projectName,
+  url,
+}: {
+  extension: ExportFormat
+  projectName: string
+  url: string
+}) {
+  const anchor = document.createElement("a")
+  anchor.href = url
+  anchor.download = `${projectName || "export"}.${extension}`
+  anchor.style.display = "none"
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 function mergeRuntimeAssets(
