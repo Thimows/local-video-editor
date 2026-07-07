@@ -1988,16 +1988,14 @@ function ExportDialog({
             </DropdownMenu>
           </div>
 
-          <div className="grid gap-3 rounded-lg bg-muted/55 p-3 text-sm">
-            <Metric
-              label="Size"
-              value={`${project.exportSettings.width}x${project.exportSettings.height}`}
-            />
-            <Metric
-              label="Frame rate"
-              value={`${project.exportSettings.fps} fps`}
-            />
-          </div>
+          <Metric
+            label="Size"
+            value={`${project.exportSettings.width}x${project.exportSettings.height}`}
+          />
+          <Metric
+            label="Frame rate"
+            value={`${project.exportSettings.fps} fps`}
+          />
 
           <Progress value={Math.round(exportState.progress * 100)}>
             <ProgressLabel>{exportState.message}</ProgressLabel>
@@ -4505,9 +4503,9 @@ function NumberField({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg bg-background px-3 py-2">
+    <div className="flex h-8 items-center justify-between gap-3 rounded-lg bg-background px-4 text-[13px] text-muted-foreground">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
+      <span>{value}</span>
     </div>
   )
 }
