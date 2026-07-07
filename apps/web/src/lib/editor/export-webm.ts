@@ -127,7 +127,7 @@ export async function exportProjectToWebM({
 
       audio.src = runtimeAsset.objectUrl
       audio.preload = "auto"
-      gain.gain.value = track.volume
+      gain.gain.value = getExportVolume(track.volume)
       source.connect(gain).connect(audioDestination)
 
       return { audio, track }
@@ -173,7 +173,7 @@ export async function exportProjectToWebM({
 
       video.src = runtimeAsset.objectUrl
       video.muted = clip.muted
-      clipGain.gain.value = clip.muted ? 0 : clip.volume
+      clipGain.gain.value = clip.muted ? 0 : getExportVolume(clip.volume)
 
       await waitForEvent(video, "loadedmetadata", signal)
       video.currentTime = clip.sourceStartSeconds
@@ -231,6 +231,10 @@ function drawContain(
   const y = (height - drawHeight) / 2
 
   context.drawImage(video, x, y, drawWidth, drawHeight)
+}
+
+function getExportVolume(volume: number) {
+  return Math.min(2, Math.max(0, volume))
 }
 
 function scheduleMusicTracks(

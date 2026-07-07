@@ -92,6 +92,9 @@ const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
 const TIMELINE_HANDLE_MIN_WIDTH = 34
 const TIMELINE_DRAG_START_THRESHOLD_PX = 3
+const TIMELINE_MIN_ZOOM = 0.4
+const TIMELINE_MAX_ZOOM = 80
+const MAX_MEDIA_VOLUME = 2
 const CARD_CLASS = "rounded-xl bg-card"
 const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
 const DEFAULT_INSPECTOR_WIDTH = 320
@@ -103,6 +106,10 @@ const MAX_TIMELINE_PANEL_HEIGHT = 420
 const RESIZE_GAP_SIZE = 12
 
 type InspectorView = "project" | "selection" | "files"
+type PreviewAudioController = {
+  source: MediaElementAudioSourceNode
+  gain: GainNode
+}
 
 export function EditorClient() {
   const params = useParams<{ id: string }>()
@@ -1117,7 +1124,7 @@ function InspectorPanel({
         <RangeField
           label="Clip volume"
           value={selectedClip.muted ? 0 : selectedClip.volume}
-          max={1}
+          max={MAX_MEDIA_VOLUME}
           step={0.01}
           onChange={(value) =>
             onClipChange(selectedClip.id, { volume: value, muted: false })
@@ -1125,6 +1132,7 @@ function InspectorPanel({
         />
         <NumberField
           label="Source start"
+          unit="sec"
           value={selectedClip.sourceStartSeconds}
           onChange={(value) =>
             onClipChange(selectedClip.id, {
@@ -1137,6 +1145,7 @@ function InspectorPanel({
         />
         <NumberField
           label="Source end"
+          unit="sec"
           value={selectedClip.sourceEndSeconds}
           onChange={(value) =>
             onClipChange(selectedClip.id, {
@@ -1153,7 +1162,7 @@ function InspectorPanel({
         <RangeField
           label="Music volume"
           value={selectedMusic.volume}
-          max={1}
+          max={MAX_MEDIA_VOLUME}
           step={0.01}
           onChange={(value) =>
             onMusicChange(selectedMusic.id, { volume: value })
@@ -1161,6 +1170,7 @@ function InspectorPanel({
         />
         <NumberField
           label="Timeline start"
+          unit="sec"
           value={selectedMusic.timelineStartSeconds}
           onChange={(value) =>
             onMusicChange(selectedMusic.id, {
@@ -1263,22 +1273,23 @@ function InspectorViewNav({
   )
 
   return (
-    <TabsSubtle
-      selectedIndex={selectedIndex}
-      onSelect={(index) => onViewChange(tabs[index]?.view ?? "project")}
-      idPrefix="editor-inspector"
-      activeLabel
-      className="p-2"
-    >
-      {tabs.map((tab, index) => (
-        <TabsSubtleItem
-          key={tab.view}
-          index={index}
-          icon={tab.icon}
-          label={tab.label}
-        />
-      ))}
-    </TabsSubtle>
+    <div className="p-2">
+      <TabsSubtle
+        selectedIndex={selectedIndex}
+        onSelect={(index) => onViewChange(tabs[index]?.view ?? "project")}
+        idPrefix="editor-inspector"
+        activeLabel
+      >
+        {tabs.map((tab, index) => (
+          <TabsSubtleItem
+            key={tab.view}
+            index={index}
+            icon={tab.icon}
+            label={tab.label}
+          />
+        ))}
+      </TabsSubtle>
+    </div>
   )
 }
 
@@ -1458,6 +1469,9 @@ function PreviewStage({
   onPlayheadChange: (seconds: number) => void
 }) {
   const playheadRef = useRef(playheadSeconds)
+  const previewAudioContextRef = useRef<AudioContext | null>(null)
+  const [previewAudioContext, setPreviewAudioContext] =
+    useState<AudioContext | null>(null)
   const playbackClockRef = useRef<{
     playheadSeconds: number
     startedAt: number
@@ -1508,6 +1522,14 @@ function PreviewStage({
   const activeClipIds = new Set(activeClips.map((clip) => clip.id))
   const projectDuration = getProjectDuration(project)
 
+  useEffect(
+    () => () => {
+      previewAudioContextRef.current?.close().catch(() => undefined)
+      previewAudioContextRef.current = null
+    },
+    []
+  )
+
   useEffect(() => {
     playheadRef.current = playheadSeconds
 
@@ -1531,6 +1553,12 @@ function PreviewStage({
       startedAt: performance.now(),
     }
   }, [isPlaying, playheadSeconds])
+
+  useEffect(() => {
+    if (isPlaying) {
+      previewAudioContext?.resume().catch(() => undefined)
+    }
+  }, [isPlaying, previewAudioContext])
 
   useEffect(() => {
     if (!isPlaying) {
@@ -1604,6 +1632,33 @@ function PreviewStage({
     .map((clip) => previewIssues[clip.id])
     .find(Boolean)
 
+  function getPreviewAudioContext() {
+    if (previewAudioContextRef.current) {
+      return previewAudioContextRef.current
+    }
+
+    const nextAudioContext = createPreviewAudioContext()
+
+    if (!nextAudioContext) {
+      return null
+    }
+
+    previewAudioContextRef.current = nextAudioContext
+    setPreviewAudioContext(nextAudioContext)
+
+    return nextAudioContext
+  }
+
+  function togglePlayback() {
+    const nextIsPlaying = !isPlaying
+
+    if (nextIsPlaying) {
+      getPreviewAudioContext()?.resume().catch(() => undefined)
+    }
+
+    onPlayChange(nextIsPlaying)
+  }
+
   return (
     <section
       className={`grid min-h-0 min-w-0 overflow-hidden ${CARD_CLASS}`}
@@ -1630,6 +1685,7 @@ function PreviewStage({
                 playheadSeconds={playheadSeconds}
                 isPlaying={isPlaying}
                 isActive={activeClipIds.has(clip.id)}
+                audioContext={previewAudioContext}
                 onIssue={(issue) => setPreviewIssue(clip.id, issue)}
               />
             )
@@ -1665,6 +1721,7 @@ function PreviewStage({
                 runtimeAsset={runtimeAsset}
                 playheadSeconds={playheadSeconds}
                 isPlaying={isPlaying}
+                audioContext={previewAudioContext}
               />
             )
           })}
@@ -1674,7 +1731,7 @@ function PreviewStage({
         <div className="flex items-center gap-2">
           <Button
             size="icon"
-            onClick={() => onPlayChange(!isPlaying)}
+            onClick={togglePlayback}
             aria-label={isPlaying ? "Pause" : "Play"}
             disabled={!hasPlayableMedia}
           >
@@ -1697,6 +1754,7 @@ function PreviewVideoLayer({
   playheadSeconds,
   isPlaying,
   isActive,
+  audioContext,
   onIssue,
 }: {
   clip: TimelineClip
@@ -1705,13 +1763,22 @@ function PreviewVideoLayer({
   playheadSeconds: number
   isPlaying: boolean
   isActive: boolean
+  audioContext: AudioContext | null
   onIssue: (issue: string | null) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
+  const audioControllerRef = useRef<PreviewAudioController | null>(null)
   const [isFrameReady, setIsFrameReady] = useState(false)
   const aspectRatio =
     asset?.width && asset.height ? asset.width / asset.height : 16 / 9
+
+  useEffect(
+    () => () => {
+      disconnectPreviewAudio(audioControllerRef)
+    },
+    []
+  )
 
   useEffect(() => {
     const player = videoRef.current
@@ -1728,8 +1795,13 @@ function PreviewVideoLayer({
       !shouldPlay ||
       Math.abs(player.currentTime - targetTime) > 0.25
 
-    player.volume = clip.muted ? 0 : clip.volume
-    player.muted = clip.muted
+    setPreviewMediaVolume({
+      player,
+      audioContext,
+      audioControllerRef,
+      volume: clip.volume,
+      muted: clip.muted || !isActive,
+    })
 
     if (shouldPlay && !shouldSeek) {
       setIsFrameReady(true)
@@ -1792,6 +1864,7 @@ function PreviewVideoLayer({
     }
   }, [
     clip,
+    audioContext,
     isActive,
     isPlaying,
     onIssue,
@@ -1834,14 +1907,24 @@ function PreviewAudioLayer({
   runtimeAsset,
   playheadSeconds,
   isPlaying,
+  audioContext,
 }: {
   track: MusicTrack
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
+  audioContext: AudioContext | null
 }) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
+  const audioControllerRef = useRef<PreviewAudioController | null>(null)
+
+  useEffect(
+    () => () => {
+      disconnectPreviewAudio(audioControllerRef)
+    },
+    []
+  )
 
   useEffect(() => {
     const player = audioRef.current
@@ -1857,7 +1940,13 @@ function PreviewAudioLayer({
       !isPlaying ||
       Math.abs(player.currentTime - targetTime) > 0.25
 
-    player.volume = track.volume
+    setPreviewMediaVolume({
+      player,
+      audioContext,
+      audioControllerRef,
+      volume: track.volume,
+      muted: false,
+    })
 
     if (isPlaying && !shouldSeek) {
       if (player.paused) {
@@ -1907,9 +1996,117 @@ function PreviewAudioLayer({
     return () => {
       cancelled = true
     }
-  }, [isPlaying, playheadSeconds, runtimeAsset.objectUrl, track])
+  }, [audioContext, isPlaying, playheadSeconds, runtimeAsset.objectUrl, track])
 
   return <audio ref={audioRef} preload="auto" />
+}
+
+function setPreviewMediaVolume({
+  player,
+  audioContext,
+  audioControllerRef,
+  volume,
+  muted,
+}: {
+  player: HTMLMediaElement
+  audioContext: AudioContext | null
+  audioControllerRef: { current: PreviewAudioController | null }
+  volume: number
+  muted: boolean
+}) {
+  const gainValue = muted ? 0 : getMediaVolumeMultiplier(volume)
+
+  if (!audioContext) {
+    player.muted = muted
+    player.volume = Math.min(1, gainValue)
+    return
+  }
+
+  try {
+    audioControllerRef.current ??= createPreviewAudioController(
+      audioContext,
+      player
+    )
+    player.muted = false
+    player.volume = 1
+    setPreviewGain(audioControllerRef.current.gain, audioContext, gainValue)
+  } catch {
+    player.muted = muted
+    player.volume = Math.min(1, gainValue)
+  }
+}
+
+function createPreviewAudioController(
+  audioContext: AudioContext,
+  player: HTMLMediaElement
+) {
+  const source = audioContext.createMediaElementSource(player)
+  const gain = audioContext.createGain()
+
+  source.connect(gain).connect(audioContext.destination)
+
+  return { source, gain }
+}
+
+function setPreviewGain(
+  gainNode: GainNode,
+  audioContext: AudioContext,
+  value: number
+) {
+  const now = audioContext.currentTime
+
+  gainNode.gain.cancelScheduledValues(now)
+  gainNode.gain.setValueAtTime(value, now)
+}
+
+function disconnectPreviewAudio(controllerRef: {
+  current: PreviewAudioController | null
+}) {
+  const controller = controllerRef.current
+
+  controllerRef.current = null
+  controller?.source.disconnect()
+  controller?.gain.disconnect()
+}
+
+function getMediaVolumeMultiplier(volume: number) {
+  return clamp(volume, 0, MAX_MEDIA_VOLUME)
+}
+
+function createPreviewAudioContext() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const AudioContextConstructor =
+    window.AudioContext ??
+    (
+      window as typeof window & {
+        webkitAudioContext?: typeof AudioContext
+      }
+    ).webkitAudioContext
+
+  return AudioContextConstructor ? new AudioContextConstructor() : null
+}
+
+function clampTimelineZoom(zoom: number) {
+  return clamp(zoom, TIMELINE_MIN_ZOOM, TIMELINE_MAX_ZOOM)
+}
+
+function getTimelineZoomSliderValue(zoom: number) {
+  const min = Math.log(TIMELINE_MIN_ZOOM)
+  const max = Math.log(TIMELINE_MAX_ZOOM)
+  const current = Math.log(clampTimelineZoom(zoom))
+
+  return clamp((current - min) / (max - min), 0, 1)
+}
+
+function getTimelineZoomFromSliderValue(value: number) {
+  const min = Math.log(TIMELINE_MIN_ZOOM)
+  const max = Math.log(TIMELINE_MAX_ZOOM)
+  const progress = clamp(value, 0, 1)
+
+  return Number(Math.exp(min + progress * (max - min)).toFixed(2))
 }
 
 function Timeline({
@@ -1917,7 +2114,7 @@ function Timeline({
   runtimeAssets,
   selection,
   playheadSeconds,
-  zoom,
+  zoom: rawZoom,
   viewportHeight,
   onSelect,
   onPlayheadChange,
@@ -1946,6 +2143,7 @@ function Timeline({
     placement: TimelineDropPlacement
   ) => void
 }) {
+  const zoom = clampTimelineZoom(rawZoom)
   const timelineItems = useMemo(
     () => [...project.clips, ...project.musicTracks],
     [project.clips, project.musicTracks]
@@ -1972,6 +2170,12 @@ function Timeline({
     null
   )
   const snapItems = timelineItems
+
+  useEffect(() => {
+    if (!Object.is(rawZoom, zoom)) {
+      onZoomChange(zoom)
+    }
+  }, [onZoomChange, rawZoom, zoom])
 
   useEffect(() => {
     zoomRef.current = zoom
@@ -2023,7 +2227,11 @@ function Timeline({
           currentDuration
         )
         const zoomFactor = Math.exp(-event.deltaY * 0.005)
-        const nextZoom = clamp(currentZoom * zoomFactor, 1, 160)
+        const nextZoom = clamp(
+          currentZoom * zoomFactor,
+          TIMELINE_MIN_ZOOM,
+          TIMELINE_MAX_ZOOM
+        )
 
         if (Math.abs(nextZoom - currentZoom) < 0.01) {
           return
@@ -2066,7 +2274,11 @@ function Timeline({
 
   function zoomAroundPlayhead(nextZoom: number) {
     const scrollContainer = timelineRef.current
-    const clampedZoom = clamp(nextZoom, 1, 160)
+    const clampedZoom = clamp(
+      nextZoom,
+      TIMELINE_MIN_ZOOM,
+      TIMELINE_MAX_ZOOM
+    )
 
     if (!scrollContainer) {
       onZoomChange(clampedZoom)
@@ -2164,12 +2376,16 @@ function Timeline({
           </Tooltip>
           <Label className="text-xs">Zoom</Label>
           <Slider
-            value={[zoom]}
-            min={1}
-            max={160}
-            step={0.25}
+            value={[getTimelineZoomSliderValue(zoom)]}
+            min={0}
+            max={1}
+            step={0.001}
             onValueChange={(value) =>
-              zoomAroundPlayhead(getSliderValue(value, zoom))
+              zoomAroundPlayhead(
+                getTimelineZoomFromSliderValue(
+                  getSliderValue(value, getTimelineZoomSliderValue(zoom))
+                )
+              )
             }
           />
         </div>
@@ -2642,10 +2858,12 @@ function RangeField({
 
 function NumberField({
   label,
+  unit,
   value,
   onChange,
 }: {
   label: string
+  unit?: string
   value: number
   onChange: (value: number) => void
 }) {
@@ -2654,14 +2872,21 @@ function NumberField({
       <Label className="text-xs font-normal text-muted-foreground">
         {label}
       </Label>
-      <Input
-        className="select-text"
-        type="number"
-        min={0}
-        step={0.1}
-        value={Number(value.toFixed(2))}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
+      <div className="group relative">
+        <Input
+          className={`select-text ${unit ? "pr-16" : ""}`}
+          type="number"
+          min={0}
+          step={0.1}
+          value={Number(value.toFixed(2))}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        {unit ? (
+          <span className="pointer-events-none absolute top-1/2 right-6 -translate-y-1/2 text-[13px] text-muted-foreground group-focus-within:text-foreground group-hover:text-foreground">
+            {unit}
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }
