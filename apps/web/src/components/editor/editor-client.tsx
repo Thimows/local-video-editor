@@ -12,6 +12,7 @@ import {
   IconDots as Dots,
   IconExclamationCircleFilled as CircleExclamation,
   IconFileDownloadFilled as Download,
+  IconHandStop as HandStop,
   IconMagnet as Magnet,
   IconMagnetOff as MagnetOff,
   IconMoonFilled as Moon,
@@ -24,6 +25,7 @@ import {
   IconLink as LinkIcon,
   IconPlayerPauseFilled as Pause,
   IconPlayerPlayFilled as Play,
+  IconPointer as Cursor,
   IconPointerFilled as MousePointer2,
   IconVideoFilled as Film,
 } from "@tabler/icons-react"
@@ -123,6 +125,7 @@ const SNAP_THRESHOLD_MAX_SECONDS = 30
 const MIN_ITEM_DURATION_SECONDS = 0.2
 const PREVIEW_PRELOAD_SECONDS = 0.75
 const PREVIEW_EDGE_SAMPLE_SECONDS = 1 / 60
+const PREVIEW_SCRUB_SETTLE_MS = 220
 const SNAP_OVERLAP_SECONDS = 0.001
 const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
@@ -335,6 +338,8 @@ export function EditorClient() {
   const [snapEnabled, setSnapEnabled] = useState(true)
   const [previewResolutionScale, setPreviewResolutionScale] =
     useState<PreviewResolutionScale>(DEFAULT_PREVIEW_RESOLUTION_SCALE)
+  const [isTimelineScrubbing, setIsTimelineScrubbing] = useState(false)
+  const [isTimelineScrubSettling, setIsTimelineScrubSettling] = useState(false)
   const [timelineItemPreview, setTimelineItemPreview] =
     useState<TimelineItemPreviewPatch | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -374,6 +379,7 @@ export function EditorClient() {
   const contentGridRef = useRef<HTMLDivElement>(null)
   const topPanelRef = useRef<HTMLDivElement>(null)
   const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
+  const timelineScrubSettleTimeoutRef = useRef<number | null>(null)
 
   const selectEditorSelection = useCallback((nextSelection: Selection) => {
     setSelection(nextSelection)
@@ -422,6 +428,26 @@ export function EditorClient() {
       selectEditorSelection({ type: "project" })
     }
   }, [project, selectEditorSelection, selection])
+
+  const handleTimelineSeekingChange = useCallback((isSeeking: boolean) => {
+    if (timelineScrubSettleTimeoutRef.current !== null) {
+      window.clearTimeout(timelineScrubSettleTimeoutRef.current)
+      timelineScrubSettleTimeoutRef.current = null
+    }
+
+    if (isSeeking) {
+      setIsTimelineScrubbing(true)
+      setIsTimelineScrubSettling(true)
+      return
+    }
+
+    setIsTimelineScrubbing(false)
+    setIsTimelineScrubSettling(true)
+    timelineScrubSettleTimeoutRef.current = window.setTimeout(() => {
+      setIsTimelineScrubSettling(false)
+      timelineScrubSettleTimeoutRef.current = null
+    }, PREVIEW_SCRUB_SETTLE_MS)
+  }, [])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -479,6 +505,15 @@ export function EditorClient() {
 
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [deleteSelectedTimelineItem, project, selectEditorSelection, selection.type])
+
+  useEffect(
+    () => () => {
+      if (timelineScrubSettleTimeoutRef.current !== null) {
+        window.clearTimeout(timelineScrubSettleTimeoutRef.current)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     saveEditorLayout({
@@ -1382,6 +1417,7 @@ export function EditorClient() {
             runtimeAssets={runtimeAssets}
             playheadSeconds={playheadSeconds}
             isPlaying={isPlaying}
+            isScrubbing={isTimelineScrubbing || isTimelineScrubSettling}
             previewResolutionScale={previewResolutionScale}
             onPlayChange={setIsPlaying}
             onPlayheadChange={setPlayheadSeconds}
@@ -1413,6 +1449,7 @@ export function EditorClient() {
           viewportHeight={Math.max(96, timelinePanelHeight - 40)}
           onSelect={selectEditorSelection}
           onPlayheadChange={setPlayheadSeconds}
+          onSeekingChange={handleTimelineSeekingChange}
           onClipChange={updateClip}
           onMusicChange={updateMusic}
           onZoomChange={setTimelineZoom}
@@ -2326,6 +2363,7 @@ function PreviewStage({
   runtimeAssets,
   playheadSeconds,
   isPlaying,
+  isScrubbing,
   previewResolutionScale,
   onPlayChange,
   onPlayheadChange,
@@ -2336,6 +2374,7 @@ function PreviewStage({
   runtimeAssets: RuntimeAssetMap
   playheadSeconds: number
   isPlaying: boolean
+  isScrubbing: boolean
   previewResolutionScale: PreviewResolutionScale
   onPlayChange: (isPlaying: boolean) => void
   onPlayheadChange: (seconds: number) => void
@@ -2346,12 +2385,12 @@ function PreviewStage({
   const previewAudioContextRef = useRef<AudioContext | null>(null)
   const [previewAudioContext, setPreviewAudioContext] =
     useState<AudioContext | null>(null)
+  const [previewIssues, setPreviewIssues] = useState<Record<string, string>>({})
   const playbackClockRef = useRef<{
     playheadSeconds: number
     startedAt: number
   } | null>(null)
   const generatedPlayheadRef = useRef<number | null>(null)
-  const [previewIssues, setPreviewIssues] = useState<Record<string, string>>({})
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -2409,7 +2448,7 @@ function PreviewStage({
   useEffect(() => {
     playheadRef.current = playheadSeconds
 
-    if (!isPlaying) {
+    if (!isPlaying || isScrubbing) {
       playbackClockRef.current = null
       generatedPlayheadRef.current = null
       return
@@ -2428,7 +2467,7 @@ function PreviewStage({
       playheadSeconds,
       startedAt: performance.now(),
     }
-  }, [isPlaying, playheadSeconds])
+  }, [isPlaying, isScrubbing, playheadSeconds])
 
   useEffect(() => {
     if (isPlaying) {
@@ -2437,7 +2476,7 @@ function PreviewStage({
   }, [isPlaying, previewAudioContext])
 
   useEffect(() => {
-    if (!isPlaying) {
+    if (!isPlaying || isScrubbing) {
       return
     }
 
@@ -2481,7 +2520,7 @@ function PreviewStage({
     return () => {
       cancelAnimationFrame(frame)
     }
-  }, [isPlaying, onPlayChange, onPlayheadChange, projectDuration])
+  }, [isPlaying, isScrubbing, onPlayChange, onPlayheadChange, projectDuration])
 
   function setPreviewIssue(id: string, issue: string | null) {
     setPreviewIssues((current) => {
@@ -2580,6 +2619,7 @@ function PreviewStage({
                   runtimeAsset={runtimeAsset}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
+                  isScrubbing={isScrubbing}
                   isActive={activeClipIds.has(clip.id)}
                   audioContext={previewAudioContext}
                   getAudioContext={getPreviewAudioContext}
@@ -2631,6 +2671,7 @@ function PreviewStage({
                   runtimeAsset={runtimeAsset}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
+                  isScrubbing={isScrubbing}
                   audioContext={previewAudioContext}
                   getAudioContext={getPreviewAudioContext}
                 />
@@ -2639,7 +2680,7 @@ function PreviewStage({
           </div>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 p-3">
         <div className="flex items-center gap-2">
           <Button
             size="icon"
@@ -2722,6 +2763,7 @@ function PreviewVideoLayer({
   runtimeAsset,
   playheadSeconds,
   isPlaying,
+  isScrubbing,
   isActive,
   audioContext,
   getAudioContext,
@@ -2735,6 +2777,7 @@ function PreviewVideoLayer({
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
+  isScrubbing: boolean
   isActive: boolean
   audioContext: AudioContext | null
   getAudioContext: () => AudioContext | null
@@ -2751,7 +2794,6 @@ function PreviewVideoLayer({
     name: asset?.name,
     volume: clip.volume,
   })
-  const [isFrameReady, setIsFrameReady] = useState(false)
   const layerGeometry = getPreviewVideoLayerGeometry({
     asset,
     clip,
@@ -2827,15 +2869,13 @@ function PreviewVideoLayer({
       clipTiming,
       playheadSeconds
     )
-    const shouldPlay = isPlaying && isActive
+    const shouldPlay = isPlaying && isActive && !isScrubbing
     const shouldSeek =
       sourceChanged ||
       !shouldPlay ||
       Math.abs(player.currentTime - targetTime) > 0.25
 
     if (shouldPlay && !shouldSeek) {
-      setIsFrameReady(true)
-
       if (player.paused) {
         player.play().catch(() => undefined)
       }
@@ -2865,25 +2905,19 @@ function PreviewVideoLayer({
         Math.abs(player.currentTime - targetTime) > 0.04
       ) {
         player.currentTime = targetTime
-        await waitForMediaSeek(player)
+
+        if (!shouldPlay) {
+          await waitForMediaSeek(player)
+        }
       }
 
       if (cancelled) {
         return
       }
 
-      await waitForMediaFrame(player)
-
-      if (cancelled) {
-        return
+      if (player.videoWidth > 0 && player.videoHeight > 0) {
+        onIssue(null)
       }
-
-      onIssue(
-        player.videoWidth === 0 || player.videoHeight === 0
-          ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
-          : null
-      )
-      setIsFrameReady(true)
 
       if (shouldPlay) {
         await player.play().catch(() => undefined)
@@ -2900,20 +2934,26 @@ function PreviewVideoLayer({
       cancelled = true
     }
   }, [
-    isActive,
-    isPlaying,
-    onIssue,
-    playheadSeconds,
-    runtimeAsset.objectUrl,
     clip.sourceEndSeconds,
     clip.sourceStartSeconds,
     clip.timelineStartSeconds,
+    isActive,
+    isPlaying,
+    isScrubbing,
+    onIssue,
+    playheadSeconds,
+    runtimeAsset.objectUrl,
   ])
 
   useEffect(() => {
     const player = audioRef.current
 
     if (!player) {
+      return
+    }
+
+    if (isScrubbing) {
+      player.pause()
       return
     }
 
@@ -2990,6 +3030,7 @@ function PreviewVideoLayer({
     clip.timelineStartSeconds,
     isActive,
     isPlaying,
+    isScrubbing,
     applyClipAudioVolume,
     playheadSeconds,
     runtimeAsset.objectUrl,
@@ -2999,8 +3040,8 @@ function PreviewVideoLayer({
     <>
       <div
         className={[
-          "absolute overflow-hidden transition-opacity duration-75",
-          isActive && isFrameReady ? "opacity-100" : "opacity-0",
+          "absolute overflow-hidden",
+          isActive ? "opacity-100" : "opacity-0",
         ].join(" ")}
         style={layerStyle}
       >
@@ -3106,6 +3147,7 @@ function PreviewAudioLayer({
   runtimeAsset,
   playheadSeconds,
   isPlaying,
+  isScrubbing,
   audioContext,
   getAudioContext,
 }: {
@@ -3113,6 +3155,7 @@ function PreviewAudioLayer({
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
+  isScrubbing: boolean
   audioContext: AudioContext | null
   getAudioContext: () => AudioContext | null
 }) {
@@ -3164,6 +3207,11 @@ function PreviewAudioLayer({
     const player = audioRef.current
 
     if (!player) {
+      return
+    }
+
+    if (isScrubbing) {
+      player.pause()
       return
     }
 
@@ -3233,6 +3281,7 @@ function PreviewAudioLayer({
     }
   }, [
     isPlaying,
+    isScrubbing,
     applyTrackAudioVolume,
     playheadSeconds,
     runtimeAsset.objectUrl,
@@ -3273,6 +3322,7 @@ function Timeline({
   viewportHeight,
   onSelect,
   onPlayheadChange,
+  onSeekingChange,
   onClipChange,
   onMusicChange,
   onZoomChange,
@@ -3294,6 +3344,7 @@ function Timeline({
   viewportHeight: number
   onSelect: (selection: Selection) => void
   onPlayheadChange: (seconds: number) => void
+  onSeekingChange: (isSeeking: boolean) => void
   onClipChange: (
     id: string,
     patch: Partial<TimelineClip>,
@@ -3353,10 +3404,17 @@ function Timeline({
   }, [duration, tickInterval])
   const timelineShellRef = useRef<HTMLDivElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
+  const timelineViewportRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
   const playheadSecondsRef = useRef(playheadSeconds)
   const isSeekingRef = useRef(false)
+  const panDragRef = useRef<{
+    x: number
+    y: number
+    scrollLeft: number
+    scrollTop: number
+  } | null>(null)
   const dropMetadataCacheRef = useRef<Map<string, TimelineDropMetadataCache>>(
     new Map()
   )
@@ -3369,6 +3427,9 @@ function Timeline({
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
   const [isSeeking, setIsSeeking] = useState(false)
+  const [isPanning, setIsPanning] = useState(false)
+  const [interactionMode, setInteractionMode] =
+    useState<TimelineInteractionMode>("select")
   const [snapPreview, setSnapPreview] = useState<TimelineSnapPreview | null>(
     null
   )
@@ -3712,6 +3773,7 @@ function Timeline({
     event.currentTarget.setPointerCapture(event.pointerId)
     isSeekingRef.current = true
     setIsSeeking(true)
+    onSeekingChange(true)
     onPlayheadChange(getSecondsFromPointer(event))
   }
 
@@ -3727,8 +3789,91 @@ function Timeline({
   }
 
   function stopSeeking() {
+    if (!isSeekingRef.current && !isSeeking) {
+      return
+    }
+
     isSeekingRef.current = false
     setIsSeeking(false)
+    onSeekingChange(false)
+  }
+
+  function startPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setHoverSeconds(null)
+    panDragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: event.currentTarget.scrollLeft,
+      scrollTop: timelineViewportRef.current?.scrollTop ?? 0,
+    }
+    setIsPanning(true)
+  }
+
+  function movePan(event: PointerEvent<HTMLDivElement>) {
+    const drag = panDragRef.current
+
+    if (!drag) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    const nextScrollLeft = Math.max(0, drag.scrollLeft - (event.clientX - drag.x))
+    const nextScrollTop = Math.max(0, drag.scrollTop - (event.clientY - drag.y))
+
+    event.currentTarget.scrollLeft = nextScrollLeft
+    if (timelineViewportRef.current) {
+      timelineViewportRef.current.scrollTop = nextScrollTop
+    }
+    syncTimelineScrollVariable(event.currentTarget)
+    setTimelineScrollPosition(nextScrollLeft)
+  }
+
+  function stopPan() {
+    if (!panDragRef.current) {
+      return
+    }
+
+    panDragRef.current = null
+    setIsPanning(false)
+  }
+
+  function handleTimelinePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (interactionMode === "pan") {
+      startPan(event)
+      return
+    }
+
+    seekFromPointer(event)
+  }
+
+  function handleTimelinePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (panDragRef.current) {
+      movePan(event)
+      return
+    }
+
+    updateHover(event)
+  }
+
+  function handleTimelinePointerUp() {
+    if (panDragRef.current) {
+      stopPan()
+      return
+    }
+
+    stopSeeking()
+  }
+
+  function handleTimelinePointerCancel() {
+    stopPan()
+    stopSeeking()
   }
 
   function updateTimelineScroll(event: UIEvent<HTMLDivElement>) {
@@ -3846,11 +3991,16 @@ function Timeline({
             <span className="inline-flex">
               <Button
                 type="button"
-                variant="outline"
+                variant={canSplit ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Split clip"
                 onClick={onSplit}
                 disabled={!canSplit}
+                className={
+                  canSplit
+                    ? undefined
+                    : "bg-transparent disabled:bg-transparent disabled:opacity-35"
+                }
               >
                 <Scissors />
               </Button>
@@ -3866,17 +4016,55 @@ function Timeline({
             <span className="inline-flex">
               <Button
                 type="button"
-                variant="outline"
+                variant={canDelete ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Delete selected timeline item"
                 onClick={onDelete}
                 disabled={!canDelete}
+                className={
+                  canDelete
+                    ? undefined
+                    : "bg-transparent disabled:bg-transparent disabled:opacity-35"
+                }
               >
                 <Trash />
               </Button>
             </span>
           </Tooltip>
           <div className="h-5 w-px bg-border" aria-hidden="true" />
+          <Tooltip content="Select timeline items">
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                active={interactionMode === "select"}
+                aria-label="Select timeline items"
+                aria-pressed={interactionMode === "select"}
+                onClick={() => setInteractionMode("select")}
+              >
+                <Cursor />
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip content="Pan timeline">
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                active={interactionMode === "pan"}
+                aria-label="Pan timeline"
+                aria-pressed={interactionMode === "pan"}
+                onClick={() => {
+                  stopSeeking()
+                  setInteractionMode("pan")
+                }}
+              >
+                <HandStop />
+              </Button>
+            </span>
+          </Tooltip>
           <Tooltip
             content={
               snapEnabled
@@ -3887,7 +4075,7 @@ function Timeline({
             <span className="inline-flex">
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 size="icon-sm"
                 active={snapEnabled}
                 aria-label={
@@ -3922,7 +4110,8 @@ function Timeline({
       </div>
 
       <div
-        className="min-w-0 overflow-y-auto rounded-b-xl bg-card"
+        ref={timelineViewportRef}
+        className="scrollbar-minimal min-w-0 overflow-y-auto rounded-b-xl bg-card"
         style={{
           height: viewportHeight,
         }}
@@ -4010,17 +4199,25 @@ function Timeline({
           <div
             ref={timelineRef}
             data-timeline-drop-zone="true"
-            className="absolute inset-0 h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain"
+            className={[
+              "scrollbar-minimal absolute inset-0 h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain",
+              interactionMode === "pan"
+                ? isPanning
+                  ? "cursor-grabbing"
+                  : "cursor-grab"
+                : "",
+            ].join(" ")}
             style={{
               contain: "layout paint",
               minHeight: timelineContentHeight,
               scrollbarGutter: "stable",
               "--timeline-scroll-left": "0px",
             } as CSSProperties}
-            onPointerDown={seekFromPointer}
-            onPointerMove={updateHover}
-            onPointerUp={stopSeeking}
-            onPointerCancel={stopSeeking}
+            onPointerDown={handleTimelinePointerDown}
+            onPointerMove={handleTimelinePointerMove}
+            onPointerUp={handleTimelinePointerUp}
+            onPointerCancel={handleTimelinePointerCancel}
+            onLostPointerCapture={handleTimelinePointerCancel}
             onPointerLeave={() => setHoverSeconds(null)}
             onScroll={updateTimelineScroll}
             onDragEnter={updateDropPreview}
@@ -4096,6 +4293,7 @@ function Timeline({
                     timelineVisibleStartPx={timelineVisibleStartPx}
                     timelineVisibleEndPx={timelineVisibleEndPx}
                     connected={connected}
+                    canDrag={interactionMode === "select"}
                     onSelect={() => onSelect({ type: "clip", id: clip.id })}
                     onSnapPreviewChange={setSnapPreview}
                     onTrimPreview={onPlayheadChange}
@@ -4160,6 +4358,7 @@ function Timeline({
                     timelineVisibleStartPx={timelineVisibleStartPx}
                     timelineVisibleEndPx={timelineVisibleEndPx}
                     connected={connected}
+                    canDrag={interactionMode === "select"}
                     onSelect={() => onSelect({ type: "music", id: track.id })}
                     onSnapPreviewChange={setSnapPreview}
                     onTrimPreview={onPlayheadChange}
@@ -4226,6 +4425,7 @@ function TimelineItem({
   timelineVisibleStartPx,
   timelineVisibleEndPx,
   connected,
+  canDrag,
   zoom,
   onSelect,
   onSnapPreviewChange,
@@ -4247,6 +4447,7 @@ function TimelineItem({
   timelineVisibleStartPx: number
   timelineVisibleEndPx: number
   connected: boolean
+  canDrag: boolean
   zoom: number
   onSelect: () => void
   onSnapPreviewChange: (preview: TimelineSnapPreview | null) => void
@@ -4298,7 +4499,8 @@ function TimelineItem({
   )
   const maxLabelOffset = Math.max(0, labelViewportWidth - 24)
   const handleClassName = [
-    "absolute top-1/2 z-30 h-5 w-1 -translate-y-1/2 cursor-ew-resize rounded-full",
+    "absolute top-1/2 z-30 h-5 w-1 -translate-y-1/2 rounded-full",
+    canDrag ? "cursor-ew-resize" : "cursor-grab",
     selected ? "bg-primary-foreground/80" : "bg-foreground/25",
   ].join(" ")
 
@@ -4306,8 +4508,13 @@ function TimelineItem({
     event: PointerEvent<HTMLDivElement>,
     mode: TimelineDragMode
   ) {
-    event.stopPropagation()
     onSelect()
+
+    if (!canDrag) {
+      return
+    }
+
+    event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragRef.current = {
       x: event.clientX,
@@ -4375,6 +4582,7 @@ function TimelineItem({
     <div
       className={[
         "absolute overflow-hidden rounded-lg border text-xs",
+        "cursor-grab",
         selected
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border bg-background",
@@ -4765,6 +4973,7 @@ function ResizeGapHandle({
 
 type TimelineItemData = TimelineClip | MusicTrack
 type TimelineDragMode = "move" | "start" | "end"
+type TimelineInteractionMode = "select" | "pan"
 type TimelineDroppedFile = {
   file: File
   fileHandle?: FileSystemFileHandle
@@ -5624,37 +5833,6 @@ function waitForMediaMetadata(media: HTMLMediaElement) {
     }
 
     media.addEventListener("loadedmetadata", onLoadedMetadata, { once: true })
-    media.addEventListener("error", onError, { once: true })
-  })
-}
-
-function waitForMediaFrame(media: HTMLMediaElement) {
-  if (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return Promise.resolve()
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(onReady, 750)
-
-    function cleanup() {
-      window.clearTimeout(timeout)
-      media.removeEventListener("loadeddata", onReady)
-      media.removeEventListener("canplay", onReady)
-      media.removeEventListener("error", onError)
-    }
-
-    function onReady() {
-      cleanup()
-      resolve()
-    }
-
-    function onError() {
-      cleanup()
-      reject(new Error("Could not load media frame"))
-    }
-
-    media.addEventListener("loadeddata", onReady, { once: true })
-    media.addEventListener("canplay", onReady, { once: true })
     media.addEventListener("error", onError, { once: true })
   })
 }

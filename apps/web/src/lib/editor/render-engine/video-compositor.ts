@@ -19,10 +19,13 @@ type ExportVideoSource = {
   input: Input
   readSample: (
     timestampSeconds: number,
-    signal: AbortSignal
+    signal: AbortSignal,
+    mode?: VideoSampleReadMode
   ) => Promise<VideoSample | null>
   close: () => void
 }
+
+export type VideoSampleReadMode = "sequential" | "sparse"
 
 export type ClipNode = {
   clip: TimelineClip
@@ -33,18 +36,23 @@ export type ClipNode = {
 
 const EXPORT_MEDIA_PRELOAD_SECONDS = 1.5
 const EXPORT_MEDIA_POSTROLL_SECONDS = 0.35
+const SEQUENTIAL_SAMPLE_RESET_SECONDS = 0.75
 
 export async function prepareExportVideoWindow({
   clipNodes,
   clips,
   runtimeAssets,
+  sampleReadMode = "sequential",
   signal,
+  sourceSignal = signal,
   timelineSeconds,
 }: {
   clipNodes: Map<string, ClipNode>
   clips: TimelineClip[]
   runtimeAssets: RuntimeAssetMap
+  sampleReadMode?: VideoSampleReadMode
   signal: AbortSignal
+  sourceSignal?: AbortSignal
   timelineSeconds: number
 }) {
   const neededClipIds = new Set<string>()
@@ -67,7 +75,7 @@ export async function prepareExportVideoWindow({
       createClipNode({
         clip,
         file: runtimeAsset.file,
-        signal,
+        signal: sourceSignal,
       })
 
     clipNodes.set(clip.id, node)
@@ -76,6 +84,7 @@ export async function prepareExportVideoWindow({
     if (isActiveAt(clip, timelineSeconds)) {
       await syncClipNode({
         node,
+        sampleReadMode,
         signal,
         timelineSeconds,
       })
@@ -91,18 +100,24 @@ export async function prepareExportVideoWindow({
 }
 
 export function drawTimelineFrame({
+  background = "#000",
   canvas,
   clipNodes,
   context,
   timelineSeconds,
 }: {
+  background?: string | null
   canvas: HTMLCanvasElement
   clipNodes: ClipNode[]
   context: CanvasRenderingContext2D
   timelineSeconds: number
 }) {
-  context.fillStyle = "#000"
-  context.fillRect(0, 0, canvas.width, canvas.height)
+  if (background === null) {
+    context.clearRect(0, 0, canvas.width, canvas.height)
+  } else {
+    context.fillStyle = background
+    context.fillRect(0, 0, canvas.width, canvas.height)
+  }
 
   const activeClips = clipNodes
     .filter(({ clip }) => isActiveAt(clip, timelineSeconds))
@@ -158,10 +173,12 @@ function createClipNode({
 
 async function syncClipNode({
   node,
+  sampleReadMode,
   signal,
   timelineSeconds,
 }: {
   node: ClipNode
+  sampleReadMode: VideoSampleReadMode
   signal: AbortSignal
   timelineSeconds: number
 }) {
@@ -174,7 +191,8 @@ async function syncClipNode({
   node.sample?.close()
   node.sample = await source.readSample(
     getSourceTimeForTimelineItem(node.clip, timelineSeconds),
-    signal
+    signal,
+    sampleReadMode
   )
 }
 
@@ -217,6 +235,7 @@ async function createExportVideoSource(
 
 function createExportVideoSampleReader(sink: VideoSampleSink) {
   let iterator: AsyncIterator<VideoSample> | null = null
+  let sparseIterator: AsyncIterator<VideoSample | null> | null = null
   let currentSample: VideoSample | null = null
   let nextSample: VideoSample | null = null
   let lastTimestamp = -Infinity
@@ -232,6 +251,11 @@ function createExportVideoSampleReader(sink: VideoSampleSink) {
     iterator = null
   }
 
+  function resetSparseIterator() {
+    sparseIterator?.return?.().catch(() => undefined)
+    sparseIterator = null
+  }
+
   async function readNextSample() {
     if (!iterator) {
       return null
@@ -242,46 +266,107 @@ function createExportVideoSampleReader(sink: VideoSampleSink) {
     return result.done ? null : result.value
   }
 
-  function readSample(timestampSeconds: number, signal: AbortSignal) {
+  async function readSparseSample(timestampSeconds: number, signal: AbortSignal) {
+    if (closed) {
+      return null
+    }
+
+    resetIterator()
+    resetSparseIterator()
+    throwIfAborted(signal)
+
+    const activeIterator = sink
+      .samplesAtTimestamps([timestampSeconds], {
+        skipLiveWait: true,
+      })
+      [Symbol.asyncIterator]()
+    sparseIterator = activeIterator
+    let sample: VideoSample | null = null
+    let sampleClone: VideoSample | null = null
+
+    function onAbort() {
+      activeIterator.return?.().catch(() => undefined)
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true })
+
+    try {
+      const result = await activeIterator.next()
+      sample = result.done ? null : result.value
+      sampleClone = sample?.clone() ?? null
+      sample?.close()
+      sample = null
+      throwIfAborted(signal)
+
+      return sampleClone
+    } catch (reason) {
+      sample?.close()
+      sampleClone?.close()
+      throw reason
+    } finally {
+      signal.removeEventListener("abort", onAbort)
+      activeIterator.return?.().catch(() => undefined)
+
+      if (sparseIterator === activeIterator) {
+        sparseIterator = null
+      }
+    }
+  }
+
+  function readSequentialSample(timestampSeconds: number, signal: AbortSignal) {
     const read = readQueue.then(async () => {
       if (closed) {
         return null
       }
 
-      throwIfAborted(signal)
-
-      if (
-        !iterator ||
-        timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS < lastTimestamp
-      ) {
+      function onAbort() {
         resetIterator()
-        iterator = sink
-          .samples(
-            Math.max(0, timestampSeconds - EXPORT_EDGE_SAMPLE_SECONDS),
-            undefined,
-            {
-              skipLiveWait: true,
-            }
-          )
-          [Symbol.asyncIterator]()
-        currentSample = await readNextSample()
-        nextSample = await readNextSample()
       }
 
-      lastTimestamp = timestampSeconds
+      signal.addEventListener("abort", onAbort, { once: true })
 
-      while (
-        nextSample &&
-        nextSample.timestamp <= timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS
-      ) {
-        currentSample?.close()
-        currentSample = nextSample
-        nextSample = await readNextSample()
+      try {
+        throwIfAborted(signal)
+
+        if (
+          !iterator ||
+          timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS < lastTimestamp ||
+          timestampSeconds - lastTimestamp > SEQUENTIAL_SAMPLE_RESET_SECONDS
+        ) {
+          resetIterator()
+          iterator = sink
+            .samples(
+              Math.max(0, timestampSeconds - EXPORT_EDGE_SAMPLE_SECONDS),
+              undefined,
+              {
+                skipLiveWait: true,
+              }
+            )
+            [Symbol.asyncIterator]()
+          currentSample = await readNextSample()
+          throwIfAborted(signal)
+          nextSample = await readNextSample()
+          throwIfAborted(signal)
+        }
+
+        lastTimestamp = timestampSeconds
+
+        while (
+          nextSample &&
+          nextSample.timestamp <= timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS
+        ) {
+          currentSample?.close()
+          currentSample = nextSample
+          nextSample = await readNextSample()
+          throwIfAborted(signal)
+        }
+
+        throwIfAborted(signal)
+
+        return currentSample?.clone() ?? null
+      } finally {
+        signal.removeEventListener("abort", onAbort)
       }
-
-      throwIfAborted(signal)
-
-      return currentSample?.clone() ?? null
     })
 
     readQueue = read.then(
@@ -292,11 +377,22 @@ function createExportVideoSampleReader(sink: VideoSampleSink) {
     return read
   }
 
+  function readSample(
+    timestampSeconds: number,
+    signal: AbortSignal,
+    mode: VideoSampleReadMode = "sequential"
+  ) {
+    return mode === "sparse"
+      ? readSparseSample(timestampSeconds, signal)
+      : readSequentialSample(timestampSeconds, signal)
+  }
+
   return {
     readSample,
     close: () => {
       closed = true
       resetIterator()
+      resetSparseIterator()
     },
   }
 }

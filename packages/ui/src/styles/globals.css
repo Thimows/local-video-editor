@@ -295,6 +295,40 @@
   }
 }
 
+@layer utilities {
+  .scrollbar-minimal {
+    scrollbar-color: color-mix(in oklab, var(--foreground) 35%, transparent)
+      transparent;
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--foreground) 25%, transparent);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+
+  .scrollbar-minimal:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--foreground) 45%, transparent);
+    background-clip: content-box;
+  }
+
+  .scrollbar-minimal::-webkit-scrollbar-thumb:active {
+    background: color-mix(in oklab, var(--foreground) 60%, transparent);
+    background-clip: content-box;
+  }
+}
+
 @supports (corner-shape: squircle) or (corner-shape: superellipse(1.4)) {
   :where([class~="rounded"], [class*="rounded-"]):not(
     :where([class~="rounded-none"], [class~="rounded-full"])
