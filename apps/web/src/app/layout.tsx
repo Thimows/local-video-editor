@@ -5,6 +5,9 @@ import "@workspace/ui/globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
+import { IconProvider } from "@workspace/ui/lib/icon-context"
+import { ShapeProvider } from "@workspace/ui/lib/shape-context"
+import { SurfaceProvider } from "@workspace/ui/lib/surface-context"
 import { cn } from "@workspace/ui/lib/utils"
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" })
@@ -42,10 +45,16 @@ export default function RootLayout({
     >
       <body>
         <ThemeProvider>
-          <TooltipProvider>
-            <ServiceWorkerRegister />
-            {children}
-          </TooltipProvider>
+          <IconProvider defaultLibrary="tabler">
+            <ShapeProvider defaultShape="pill">
+              <SurfaceProvider value={1}>
+                <TooltipProvider>
+                  <ServiceWorkerRegister />
+                  {children}
+                </TooltipProvider>
+              </SurfaceProvider>
+            </ShapeProvider>
+          </IconProvider>
         </ThemeProvider>
       </body>
     </html>

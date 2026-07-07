@@ -1,6 +1,12 @@
 import Link from "next/link"
 import type { ReactNode } from "react"
-import { ArrowRight, Film, HardDrive, ShieldCheck, WifiOff } from "lucide-react"
+import {
+  IconArrowRightCircleFilled as ArrowRight,
+  IconCloudDataConnectionFilled as WifiOff,
+  IconDatabaseFilled as HardDrive,
+  IconShieldCheckFilled as ShieldCheck,
+  IconVideoFilled as Film,
+} from "@tabler/icons-react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Badge } from "@workspace/ui/components/badge"

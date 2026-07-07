@@ -3,20 +3,28 @@
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import {
-  ArrowLeft,
-  Download,
-  FileAudio,
-  Film,
-  FolderOpen,
-  Pause,
-  Play,
-  Scissors,
-  Upload,
-  Volume2,
-  VolumeX,
-} from "lucide-react"
-import type { ChangeEvent, DragEvent, PointerEvent, ReactNode } from "react"
-import { useEffect, useMemo, useRef, useState } from "react"
+  IconChevronLeft as ChevronLeft,
+  IconCircleXFilled as VolumeX,
+  IconFileDownloadFilled as Download,
+  IconFileScissorsFilled as Scissors,
+  IconFileUploadFilled as Upload,
+  IconFolderOpenFilled as FolderOpen,
+  IconInfoCircleFilled as Info,
+  IconPlayerPauseFilled as Pause,
+  IconPlayerPlayFilled as Play,
+  IconPointerFilled as MousePointer2,
+  IconVideoFilled as Film,
+} from "@tabler/icons-react"
+import type {
+  ChangeEvent,
+  ComponentPropsWithoutRef,
+  CSSProperties,
+  DragEvent,
+  PointerEvent,
+  UIEvent,
+} from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 
 import { ThemeToggle } from "@/components/theme-toggle"
 import { exportProjectToWebM } from "@/lib/editor/export-webm"
@@ -45,7 +53,6 @@ import type {
   SourceAsset,
   TimelineClip,
 } from "@/lib/editor/types"
-import { Badge } from "@workspace/ui/components/badge"
 import { Button } from "@workspace/ui/components/button"
 import {
   Dialog,
@@ -57,19 +64,26 @@ import {
 import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 import { Progress, ProgressLabel } from "@workspace/ui/components/progress"
-import { Separator } from "@workspace/ui/components/separator"
 import { Slider } from "@workspace/ui/components/slider"
+import { SliderComfortable } from "@workspace/ui/components/ui/slider"
+import {
+  TabsSubtle,
+  TabsSubtleItem,
+} from "@workspace/ui/components/ui/tabs-subtle"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
-const TRACK_HEADER_WIDTH = 56
+const TRACK_HEADER_WIDTH = 40
 const RULER_HEIGHT = 28
+const TIMELINE_VIEWPORT_HEIGHT = 178
+const TIMELINE_PLAYHEAD_LINE_OFFSET_PX = 0.5
+const TIMELINE_PLAYHEAD_CAP_OFFSET_PX = 1
 const TRACK_HEIGHT = 34
 const TRACK_GAP = 5
-const VIDEO_TRACK_TOP = RULER_HEIGHT + 10
+const TIMELINE_TRACK_TOP = RULER_HEIGHT + 10
 const SNAP_THRESHOLD_SECONDS = 1
 const MIN_ITEM_DURATION_SECONDS = 0.2
 const PREVIEW_PRELOAD_SECONDS = 0.75
@@ -78,7 +92,17 @@ const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
 const TIMELINE_HANDLE_MIN_WIDTH = 34
 const TIMELINE_DRAG_START_THRESHOLD_PX = 3
-const CARD_CLASS = "rounded-lg bg-card"
+const CARD_CLASS = "rounded-xl bg-card"
+const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
+const DEFAULT_INSPECTOR_WIDTH = 320
+const MIN_INSPECTOR_WIDTH = 240
+const MAX_INSPECTOR_WIDTH = 520
+const DEFAULT_TIMELINE_PANEL_HEIGHT = 40 + TIMELINE_VIEWPORT_HEIGHT
+const MIN_TIMELINE_PANEL_HEIGHT = 160
+const MAX_TIMELINE_PANEL_HEIGHT = 420
+const RESIZE_GAP_SIZE = 12
+
+type InspectorView = "project" | "selection" | "files"
 
 export function EditorClient() {
   const params = useParams<{ id: string }>()
@@ -87,6 +111,7 @@ export function EditorClient() {
   const [project, setProject] = useState<Project | null>(null)
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetMap>({})
   const [selection, setSelection] = useState<Selection>({ type: "project" })
+  const [inspectorView, setInspectorView] = useState<InspectorView>("project")
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const [timelineZoom, setTimelineZoom] = useState(4)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -97,7 +122,48 @@ export function EditorClient() {
     url?: string
     controller?: AbortController
   }>({ progress: 0, message: "Idle" })
+  const [inspectorWidth, setInspectorWidth] = useState(() =>
+    getStoredEditorLayoutValue(
+      "inspectorWidth",
+      DEFAULT_INSPECTOR_WIDTH,
+      MIN_INSPECTOR_WIDTH,
+      MAX_INSPECTOR_WIDTH
+    )
+  )
+  const [timelinePanelHeight, setTimelinePanelHeight] = useState(() =>
+    getStoredEditorLayoutValue(
+      "timelinePanelHeight",
+      DEFAULT_TIMELINE_PANEL_HEIGHT,
+      MIN_TIMELINE_PANEL_HEIGHT,
+      MAX_TIMELINE_PANEL_HEIGHT
+    )
+  )
+  const [activeResizeHandle, setActiveResizeHandle] = useState<
+    "columns" | "timeline" | null
+  >(null)
+  const resizeDragRef = useRef<{
+    handle: "columns" | "timeline"
+    pointerX: number
+    pointerY: number
+    inspectorWidth: number
+    timelinePanelHeight: number
+  } | null>(null)
+  const contentGridRef = useRef<HTMLDivElement>(null)
+  const topPanelRef = useRef<HTMLDivElement>(null)
   const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
+
+  const selectEditorSelection = useCallback((nextSelection: Selection) => {
+    setSelection(nextSelection)
+
+    if (nextSelection.type === "clip" || nextSelection.type === "music") {
+      setInspectorView("selection")
+      return
+    }
+
+    if (nextSelection.type === "project") {
+      setInspectorView("project")
+    }
+  }, [])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -147,13 +213,54 @@ export function EditorClient() {
 
         return current
       })
-      setSelection({ type: "project" })
+      selectEditorSelection({ type: "project" })
     }
 
     window.addEventListener("keydown", onKeyDown)
 
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [selection])
+  }, [selectEditorSelection, selection])
+
+  useEffect(() => {
+    saveEditorLayout({
+      inspectorWidth,
+      timelinePanelHeight,
+    })
+  }, [inspectorWidth, timelinePanelHeight])
+
+  useEffect(() => {
+    function clampLayoutToViewport() {
+      const contentRect = contentGridRef.current?.getBoundingClientRect()
+      const topPanelRect = topPanelRef.current?.getBoundingClientRect()
+
+      if (contentRect) {
+        const maxHeight = Math.max(
+          MIN_TIMELINE_PANEL_HEIGHT,
+          Math.min(MAX_TIMELINE_PANEL_HEIGHT, contentRect.height - 360)
+        )
+
+        setTimelinePanelHeight((current) =>
+          clamp(current, MIN_TIMELINE_PANEL_HEIGHT, maxHeight)
+        )
+      }
+
+      if (topPanelRect) {
+        const maxWidth = Math.max(
+          MIN_INSPECTOR_WIDTH,
+          Math.min(MAX_INSPECTOR_WIDTH, topPanelRect.width - 360)
+        )
+
+        setInspectorWidth((current) =>
+          clamp(current, MIN_INSPECTOR_WIDTH, maxWidth)
+        )
+      }
+    }
+
+    clampLayoutToViewport()
+    window.addEventListener("resize", clampLayoutToViewport)
+
+    return () => window.removeEventListener("resize", clampLayoutToViewport)
+  }, [])
 
   useEffect(() => {
     function preventPageZoomWheel(event: WheelEvent) {
@@ -335,8 +442,7 @@ export function EditorClient() {
     const nextRuntimeAssets: Record<string, RuntimeAsset> = {}
     let nextTimelineStart =
       placement?.timelineStartSeconds ?? getProjectDuration(project)
-    let placedVideoOffset = 0
-    let placedAudioOffset = 0
+    let placedTimelineOffset = 0
 
     for (const file of files) {
       const type = getFileKind(file)
@@ -363,37 +469,32 @@ export function EditorClient() {
       importedAssets.push(asset)
       nextRuntimeAssets[asset.id] = createRuntimeAsset(file)
 
-      if (type === "video") {
-        const desiredStart =
-          placement?.kind === "video"
-            ? placement.timelineStartSeconds + placedVideoOffset
-            : nextTimelineStart
-        const trackIndex = findAvailableTrackIndex(
-          [...project.clips, ...importedClips],
-          desiredStart,
-          sourceEndSeconds
+      const timelineItems = [
+        ...project.clips,
+        ...project.musicTracks,
+        ...importedClips,
+        ...importedTracks,
+      ]
+      const desiredStart = placement
+        ? placement.timelineStartSeconds + placedTimelineOffset
+        : nextTimelineStart
+      const desiredTrackIndex = placement
+        ? findNearestAvailableTrackIndex(
+            timelineItems,
+            placement.trackIndex,
+            desiredStart,
+            sourceEndSeconds
+          )
+        : findAvailableTrackIndex(timelineItems, desiredStart, sourceEndSeconds)
+      const timelineStartSeconds = findNearestNonOverlappingStart(
+        snapTimelineStart(desiredStart, sourceEndSeconds, timelineItems),
+        sourceEndSeconds,
+        timelineItems.filter(
+          (item) => getTrackIndex(item) === desiredTrackIndex
         )
-        const videoItems = [...project.clips, ...importedClips]
-        const desiredTrackIndex =
-          placement?.kind === "video"
-            ? findNearestAvailableTrackIndex(
-                videoItems,
-                placement.trackIndex,
-                desiredStart,
-                sourceEndSeconds
-              )
-            : trackIndex
-        const timelineStartSeconds = findNearestNonOverlappingStart(
-          snapTimelineStart(desiredStart, sourceEndSeconds, [
-            ...project.clips,
-            ...project.musicTracks,
-            ...importedClips,
-            ...importedTracks,
-          ]),
-          sourceEndSeconds,
-          videoItems.filter((item) => getTrackIndex(item) === desiredTrackIndex)
-        )
+      )
 
+      if (type === "video") {
         importedClips.push({
           id: crypto.randomUUID(),
           sourceAssetId: asset.id,
@@ -404,39 +505,7 @@ export function EditorClient() {
           muted: false,
           volume: 1,
         })
-        nextTimelineStart = timelineStartSeconds + sourceEndSeconds
-        placedVideoOffset += sourceEndSeconds
       } else {
-        const desiredStart =
-          placement?.kind === "audio"
-            ? placement.timelineStartSeconds + placedAudioOffset
-            : 0
-        const trackIndex = findAvailableTrackIndex(
-          [...project.musicTracks, ...importedTracks],
-          desiredStart,
-          sourceEndSeconds
-        )
-        const audioItems = [...project.musicTracks, ...importedTracks]
-        const desiredTrackIndex =
-          placement?.kind === "audio"
-            ? findNearestAvailableTrackIndex(
-                audioItems,
-                placement.trackIndex,
-                desiredStart,
-                sourceEndSeconds
-              )
-            : trackIndex
-        const timelineStartSeconds = findNearestNonOverlappingStart(
-          snapTimelineStart(desiredStart, sourceEndSeconds, [
-            ...project.clips,
-            ...project.musicTracks,
-            ...importedClips,
-            ...importedTracks,
-          ]),
-          sourceEndSeconds,
-          audioItems.filter((item) => getTrackIndex(item) === desiredTrackIndex)
-        )
-
         importedTracks.push({
           id: crypto.randomUUID(),
           sourceAssetId: asset.id,
@@ -446,8 +515,10 @@ export function EditorClient() {
           trackIndex: desiredTrackIndex,
           volume: 0.75,
         })
-        placedAudioOffset += sourceEndSeconds
       }
+
+      nextTimelineStart = timelineStartSeconds + sourceEndSeconds
+      placedTimelineOffset += sourceEndSeconds
     }
 
     if (importedAssets.length === 0) {
@@ -535,6 +606,114 @@ export function EditorClient() {
     event.preventDefault()
   }
 
+  function getMaxInspectorWidth() {
+    const rect = topPanelRef.current?.getBoundingClientRect()
+
+    if (!rect) {
+      return MAX_INSPECTOR_WIDTH
+    }
+
+    return Math.max(
+      MIN_INSPECTOR_WIDTH,
+      Math.min(MAX_INSPECTOR_WIDTH, rect.width - 360 - RESIZE_GAP_SIZE)
+    )
+  }
+
+  function getMaxTimelinePanelHeight() {
+    const rect = contentGridRef.current?.getBoundingClientRect()
+
+    if (!rect) {
+      return MAX_TIMELINE_PANEL_HEIGHT
+    }
+
+    return Math.max(
+      MIN_TIMELINE_PANEL_HEIGHT,
+      Math.min(MAX_TIMELINE_PANEL_HEIGHT, rect.height - 360)
+    )
+  }
+
+  function resizeInspector(event: PointerEvent<HTMLButtonElement>) {
+    const drag = resizeDragRef.current
+
+    if (!drag || drag.handle !== "columns") {
+      return
+    }
+
+    setInspectorWidth(
+      clamp(
+        drag.inspectorWidth + event.clientX - drag.pointerX,
+        MIN_INSPECTOR_WIDTH,
+        getMaxInspectorWidth()
+      )
+    )
+  }
+
+  function resizeTimeline(event: PointerEvent<HTMLButtonElement>) {
+    const drag = resizeDragRef.current
+
+    if (!drag || drag.handle !== "timeline") {
+      return
+    }
+
+    setTimelinePanelHeight(
+      clamp(
+        drag.timelinePanelHeight + drag.pointerY - event.clientY,
+        MIN_TIMELINE_PANEL_HEIGHT,
+        getMaxTimelinePanelHeight()
+      )
+    )
+  }
+
+  function startInspectorResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    resizeDragRef.current = {
+      handle: "columns",
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      inspectorWidth,
+      timelinePanelHeight,
+    }
+    setActiveResizeHandle("columns")
+  }
+
+  function startTimelineResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    resizeDragRef.current = {
+      handle: "timeline",
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      inspectorWidth,
+      timelinePanelHeight,
+    }
+    setActiveResizeHandle("timeline")
+  }
+
+  function moveResizeHandle(event: PointerEvent<HTMLButtonElement>) {
+    if (activeResizeHandle === "columns") {
+      resizeInspector(event)
+      return
+    }
+
+    if (activeResizeHandle === "timeline") {
+      resizeTimeline(event)
+    }
+  }
+
+  function stopResizeHandle() {
+    resizeDragRef.current = null
+    setActiveResizeHandle(null)
+  }
+
+  function resetInspectorWidth() {
+    setInspectorWidth(DEFAULT_INSPECTOR_WIDTH)
+  }
+
+  function resetTimelinePanelHeight() {
+    setTimelinePanelHeight(DEFAULT_TIMELINE_PANEL_HEIGHT)
+  }
+
   function onFileInput(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ""
@@ -550,10 +729,11 @@ export function EditorClient() {
       ...project,
       clips: project.clips.map((clip) =>
         clip.id === id
-          ? constrainTimelineItemPatch(clip, project.clips, patch, [
-              ...project.clips,
-              ...project.musicTracks,
-            ])
+          ? constrainTimelineItemPatch(
+              clip,
+              [...project.clips, ...project.musicTracks],
+              patch
+            )
           : clip
       ),
       updatedAt: Date.now(),
@@ -569,10 +749,11 @@ export function EditorClient() {
       ...project,
       musicTracks: project.musicTracks.map((track) =>
         track.id === id
-          ? constrainTimelineItemPatch(track, project.musicTracks, patch, [
-              ...project.clips,
-              ...project.musicTracks,
-            ])
+          ? constrainTimelineItemPatch(
+              track,
+              [...project.clips, ...project.musicTracks],
+              patch
+            )
           : track
       ),
       updatedAt: Date.now(),
@@ -609,7 +790,7 @@ export function EditorClient() {
       ),
       updatedAt: Date.now(),
     })
-    setSelection({ type: "clip", id: nextClip.id })
+    selectEditorSelection({ type: "clip", id: nextClip.id })
     setStatus("Clip split locally")
   }
 
@@ -741,20 +922,20 @@ export function EditorClient() {
 
   return (
     <main className="flex h-svh min-h-[720px] w-full max-w-[100vw] min-w-0 flex-col overflow-hidden bg-background text-foreground select-none">
-      <header className="flex h-14 min-w-0 shrink-0 items-center justify-between px-4">
+      <header className="flex h-11 min-w-0 shrink-0 items-center justify-between px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button
             variant="ghost"
-            size="icon"
+            size="icon-sm"
             nativeButton={false}
             render={<Link href="/projects" />}
             aria-label="Back to projects"
           >
-            <ArrowLeft />
+            <ChevronLeft />
           </Button>
           <div className="min-w-0">
             <Input
-              className="h-8 border-transparent px-1 text-base font-medium shadow-none select-text"
+              className="h-7 border-transparent px-1 text-sm font-medium shadow-none select-text"
               value={project.name}
               onChange={(event) =>
                 setProject({
@@ -765,11 +946,6 @@ export function EditorClient() {
               }
             />
           </div>
-          <Badge variant={missingAssets.length ? "destructive" : "outline"}>
-            {missingAssets.length
-              ? `${missingAssets.length} missing files`
-              : "Files stay local"}
-          </Badge>
         </div>
 
         <div className="flex items-center gap-2">
@@ -781,7 +957,7 @@ export function EditorClient() {
             multiple
             onChange={onFileInput}
           />
-          <Button variant="outline" onClick={importWithPicker}>
+          <Button variant="outline" size="sm" onClick={importWithPicker}>
             <Upload data-icon="inline-start" />
             Import
           </Button>
@@ -791,21 +967,29 @@ export function EditorClient() {
             onExport={runExport}
             onCancelExport={() => exportState.controller?.abort()}
           />
-          <ThemeToggle />
+          <ThemeToggle size="icon-sm" />
         </div>
       </header>
 
       <section
-        className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-hidden p-3 pt-0"
-        style={{ gridTemplateRows: "minmax(420px, 1fr) 218px" }}
+        ref={contentGridRef}
+        className="grid min-h-0 min-w-0 flex-1 p-3 pt-0"
+        style={{
+          gridTemplateRows: `minmax(360px, 1fr) ${RESIZE_GAP_SIZE}px ${timelinePanelHeight}px`,
+        }}
         onDragOver={allowDrop}
         onDrop={importFromDrop}
       >
         <div
-          className="grid min-h-[420px] min-w-0 gap-3 overflow-hidden"
-          style={{ gridTemplateColumns: "320px minmax(0, 1fr)" }}
+          ref={topPanelRef}
+          className="grid min-h-[360px] min-w-0 overflow-visible"
+          style={{
+            gridTemplateColumns: `${inspectorWidth}px ${RESIZE_GAP_SIZE}px minmax(0, 1fr)`,
+          }}
         >
           <InspectorPanel
+            view={inspectorView}
+            onViewChange={setInspectorView}
             project={project}
             selectedAsset={selectedAsset}
             selectedClip={selectedClip}
@@ -817,6 +1001,19 @@ export function EditorClient() {
             onReconnect={reconnectAsset}
             onRestoreSavedAccess={restoreSavedAccess}
           />
+          <div className="grid min-h-0 place-items-center">
+            <ResizeGapHandle
+              aria-label="Resize inspector"
+              orientation="vertical"
+              active={activeResizeHandle === "columns"}
+              onPointerDown={startInspectorResize}
+              onPointerMove={moveResizeHandle}
+              onPointerUp={stopResizeHandle}
+              onPointerCancel={stopResizeHandle}
+              onLostPointerCapture={stopResizeHandle}
+              onDoubleClick={resetInspectorWidth}
+            />
+          </div>
           <PreviewStage
             project={project}
             runtimeAssets={runtimeAssets}
@@ -827,13 +1024,28 @@ export function EditorClient() {
           />
         </div>
 
+        <div className="grid min-w-0 place-items-center">
+          <ResizeGapHandle
+            aria-label="Resize timeline"
+            orientation="horizontal"
+            active={activeResizeHandle === "timeline"}
+            onPointerDown={startTimelineResize}
+            onPointerMove={moveResizeHandle}
+            onPointerUp={stopResizeHandle}
+            onPointerCancel={stopResizeHandle}
+            onLostPointerCapture={stopResizeHandle}
+            onDoubleClick={resetTimelinePanelHeight}
+          />
+        </div>
+
         <Timeline
           project={project}
           runtimeAssets={runtimeAssets}
           selection={selection}
           playheadSeconds={playheadSeconds}
           zoom={timelineZoom}
-          onSelect={setSelection}
+          viewportHeight={Math.max(96, timelinePanelHeight - 40)}
+          onSelect={selectEditorSelection}
           onPlayheadChange={setPlayheadSeconds}
           onClipChange={updateClip}
           onMusicChange={updateMusic}
@@ -848,6 +1060,8 @@ export function EditorClient() {
 }
 
 function InspectorPanel({
+  view,
+  onViewChange,
   project,
   selectedAsset,
   selectedClip,
@@ -859,6 +1073,8 @@ function InspectorPanel({
   onReconnect,
   onRestoreSavedAccess,
 }: {
+  view: InspectorView
+  onViewChange: (view: InspectorView) => void
   project: Project
   selectedAsset: SourceAsset | null
   selectedClip: TimelineClip | null
@@ -876,183 +1092,193 @@ function InspectorPanel({
 }) {
   const duration = getProjectDuration(project)
   const missingSavedHandles = missingAssets.filter((asset) => asset.fileHandle)
-  const sessionOnlyAssets = project.sourceAssets.filter(
-    (asset) =>
-      !asset.fileHandle &&
-      !asset.fileBlob &&
-      !missingAssets.some((missing) => missing.id === asset.id)
-  )
-  const supportsPersistentHandles =
-    typeof window !== "undefined" && "showOpenFilePicker" in window
+  const missingAssetIds = new Set(missingAssets.map((asset) => asset.id))
+  const heading =
+    view === "files"
+      ? "Files"
+      : view === "selection"
+        ? (selectedAsset?.name ?? "Selected item")
+        : "Project details"
+  const description =
+    view === "files"
+      ? "Imported media files stay local and can be reconnected here."
+      : view === "selection"
+        ? selectedAsset
+          ? `${selectedAsset.type} · ${formatBytes(selectedAsset.sizeBytes)}`
+          : "Timeline item properties."
+        : "Edit decisions are stored locally. Media files are referenced from disk."
+  const fileList =
+    project.sourceAssets.length > 0 ? project.sourceAssets : missingAssets
+  const canRestoreSavedAccess = missingSavedHandles.length > 0
 
-  return (
-    <aside
-      className={`flex min-h-0 flex-col overflow-y-auto p-4 ${CARD_CLASS}`}
-    >
+  const body =
+    view === "selection" && selectedClip ? (
       <div className="space-y-4">
-        <div className="space-y-1">
-          <h2 className="text-sm font-medium">
-            {selectedAsset ? selectedAsset.name : "Project details"}
-          </h2>
-          <p className="text-xs leading-5 text-muted-foreground">
-            {selectedAsset
-              ? `${selectedAsset.type} · ${formatBytes(selectedAsset.sizeBytes)}`
-              : "Edit decisions are stored locally. Media files are referenced from disk."}
+        <RangeField
+          label="Clip volume"
+          value={selectedClip.muted ? 0 : selectedClip.volume}
+          max={1}
+          step={0.01}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, { volume: value, muted: false })
+          }
+        />
+        <NumberField
+          label="Source start"
+          value={selectedClip.sourceStartSeconds}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, {
+              sourceStartSeconds: Math.min(
+                value,
+                selectedClip.sourceEndSeconds - 0.1
+              ),
+            })
+          }
+        />
+        <NumberField
+          label="Source end"
+          value={selectedClip.sourceEndSeconds}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, {
+              sourceEndSeconds: Math.max(
+                value,
+                selectedClip.sourceStartSeconds + 0.1
+              ),
+            })
+          }
+        />
+      </div>
+    ) : view === "selection" && selectedMusic ? (
+      <div className="space-y-4">
+        <RangeField
+          label="Music volume"
+          value={selectedMusic.volume}
+          max={1}
+          step={0.01}
+          onChange={(value) =>
+            onMusicChange(selectedMusic.id, { volume: value })
+          }
+        />
+        <NumberField
+          label="Timeline start"
+          value={selectedMusic.timelineStartSeconds}
+          onChange={(value) =>
+            onMusicChange(selectedMusic.id, {
+              timelineStartSeconds: Math.max(0, value),
+            })
+          }
+        />
+      </div>
+    ) : view === "selection" ? (
+      <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
+        Select a clip or audio item on the timeline to edit its properties.
+      </p>
+    ) : view === "files" ? (
+      <div className="space-y-4">
+        {canRestoreSavedAccess ? (
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={onRestoreSavedAccess}
+          >
+            <FolderOpen data-icon="inline-start" />
+            Restore saved access
+          </Button>
+        ) : null}
+
+        {fileList.length === 0 ? (
+          <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
+            Import video or audio files to start building a timeline.
           </p>
-        </div>
-
-        <Separator />
-
-        {selectedClip ? (
-          <div className="space-y-4">
-            <RangeField
-              label="Clip volume"
-              value={selectedClip.volume}
-              max={1}
-              step={0.01}
-              onChange={(value) =>
-                onClipChange(selectedClip.id, { volume: value })
-              }
-            />
-            <Button
-              variant={selectedClip.muted ? "default" : "outline"}
-              className="w-full"
-              onClick={() =>
-                onClipChange(selectedClip.id, { muted: !selectedClip.muted })
-              }
-            >
-              {selectedClip.muted ? (
-                <VolumeX data-icon="inline-start" />
-              ) : (
-                <Volume2 data-icon="inline-start" />
-              )}
-              {selectedClip.muted ? "Muted" : "Audio on"}
-            </Button>
-            <NumberField
-              label="Source start"
-              value={selectedClip.sourceStartSeconds}
-              onChange={(value) =>
-                onClipChange(selectedClip.id, {
-                  sourceStartSeconds: Math.min(
-                    value,
-                    selectedClip.sourceEndSeconds - 0.1
-                  ),
-                })
-              }
-            />
-            <NumberField
-              label="Source end"
-              value={selectedClip.sourceEndSeconds}
-              onChange={(value) =>
-                onClipChange(selectedClip.id, {
-                  sourceEndSeconds: Math.max(
-                    value,
-                    selectedClip.sourceStartSeconds + 0.1
-                  ),
-                })
-              }
-            />
-          </div>
-        ) : selectedMusic ? (
-          <div className="space-y-4">
-            <RangeField
-              label="Music volume"
-              value={selectedMusic.volume}
-              max={1}
-              step={0.01}
-              onChange={(value) =>
-                onMusicChange(selectedMusic.id, { volume: value })
-              }
-            />
-            <NumberField
-              label="Timeline start"
-              value={selectedMusic.timelineStartSeconds}
-              onChange={(value) =>
-                onMusicChange(selectedMusic.id, {
-                  timelineStartSeconds: Math.max(0, value),
-                })
-              }
-            />
-          </div>
         ) : (
-          <div className="grid gap-3 text-sm">
-            <Metric label="Duration" value={formatDuration(duration)} />
-            <Metric label="Clips" value={String(project.clips.length)} />
-            <Metric
-              label="Music tracks"
-              value={String(project.musicTracks.length)}
-            />
-            <Metric
-              label="Export"
-              value={`${project.exportSettings.width}x${project.exportSettings.height} WebM`}
-            />
+          <div className="space-y-2">
+            {fileList.map((asset) => (
+              <ReconnectButton
+                key={asset.id}
+                asset={asset}
+                connected={!missingAssetIds.has(asset.id)}
+                onReconnect={onReconnect}
+              />
+            ))}
           </div>
         )}
 
-        <Separator />
-
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium">Reconnect files</h3>
-            <p className="text-xs leading-5 text-muted-foreground">
-              Saved file handles are restored after reload when permission is
-              still granted. If the browser asks again, approve access here.
-            </p>
-          </div>
-          <Badge
-            variant={supportsPersistentHandles ? "outline" : "destructive"}
-          >
-            {supportsPersistentHandles
-              ? "Persistent file handles supported"
-              : "This browser only supports session files"}
-          </Badge>
-          {missingAssets.length === 0 ? (
-            <Badge variant="outline">All imported files connected</Badge>
-          ) : (
-            <div className="space-y-2">
-              {missingSavedHandles.length > 0 ? (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={onRestoreSavedAccess}
-                >
-                  <FolderOpen data-icon="inline-start" />
-                  Restore saved access
-                </Button>
-              ) : null}
-              {missingAssets.map((asset) => (
-                <ReconnectButton
-                  key={asset.id}
-                  asset={asset}
-                  connected={false}
-                  onReconnect={onReconnect}
-                />
-              ))}
-            </div>
-          )}
-          {sessionOnlyAssets.length > 0 ? (
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                These files are connected now but need a browser-stored file or
-                persistent handle to survive refresh.
-              </p>
-              {sessionOnlyAssets.map((asset) => (
-                <ReconnectButton
-                  key={asset.id}
-                  asset={asset}
-                  connected
-                  onReconnect={onReconnect}
-                />
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <p className="rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+        <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
           {status}
         </p>
       </div>
+    ) : (
+      <div className="grid gap-3 text-sm">
+        <Metric label="Duration" value={formatDuration(duration)} />
+        <Metric label="Clips" value={String(project.clips.length)} />
+        <Metric label="Audio" value={String(project.musicTracks.length)} />
+        <Metric label="Files" value={String(project.sourceAssets.length)} />
+        <Metric
+          label="Export"
+          value={`${project.exportSettings.width}x${project.exportSettings.height} WebM`}
+        />
+      </div>
+    )
+
+  return (
+    <aside className={`flex min-h-0 flex-col overflow-visible ${CARD_CLASS}`}>
+      <InspectorViewNav view={view} onViewChange={onViewChange} />
+      <div className="min-h-0 overflow-y-auto p-3">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <h2 className="truncate text-base leading-5 font-semibold">
+              {heading}
+            </h2>
+            <p className="text-xs leading-5 text-pretty text-muted-foreground">
+              {description}
+            </p>
+          </div>
+
+          {body}
+        </div>
+      </div>
     </aside>
+  )
+}
+
+function InspectorViewNav({
+  view,
+  onViewChange,
+}: {
+  view: InspectorView
+  onViewChange: (view: InspectorView) => void
+}) {
+  const tabs: Array<{
+    view: InspectorView
+    label: string
+    icon: typeof Info
+  }> = [
+    { view: "project", label: "Project details", icon: Info },
+    { view: "selection", label: "Selected item", icon: MousePointer2 },
+    { view: "files", label: "Files", icon: FolderOpen },
+  ]
+  const selectedIndex = Math.max(
+    0,
+    tabs.findIndex((tab) => tab.view === view)
+  )
+
+  return (
+    <TabsSubtle
+      selectedIndex={selectedIndex}
+      onSelect={(index) => onViewChange(tabs[index]?.view ?? "project")}
+      idPrefix="editor-inspector"
+      activeLabel
+      className="p-2"
+    >
+      {tabs.map((tab, index) => (
+        <TabsSubtleItem
+          key={tab.view}
+          index={index}
+          icon={tab.icon}
+          label={tab.label}
+        />
+      ))}
+    </TabsSubtle>
   )
 }
 
@@ -1076,7 +1302,7 @@ function ExportDialog({
     <Dialog>
       <DialogTrigger
         render={
-          <Button type="button">
+          <Button type="button" size="sm">
             <Download data-icon="inline-start" />
             Export
           </Button>
@@ -1091,7 +1317,7 @@ function ExportDialog({
           </DialogDescription>
         </div>
 
-        <div className="grid gap-3 rounded-md bg-muted/55 p-3 text-sm">
+        <div className="grid gap-3 rounded-lg bg-muted/55 p-3 text-sm">
           <Metric
             label="Size"
             value={`${project.exportSettings.width}x${project.exportSettings.height}`}
@@ -1171,7 +1397,7 @@ function ReconnectButton({
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-md border bg-background p-2">
+    <div className="flex items-center gap-2 rounded-lg border bg-background p-2">
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
@@ -1380,13 +1606,16 @@ function PreviewStage({
 
   return (
     <section
-      className={`grid min-h-[420px] min-w-0 overflow-hidden ${CARD_CLASS}`}
+      className={`grid min-h-0 min-w-0 overflow-hidden ${CARD_CLASS}`}
       style={{ gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
-      <div className="grid min-h-0 place-items-center bg-card p-4">
-        <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-md bg-card">
+      <div className="grid min-h-0 place-items-center bg-card p-3">
+        <div className="[container-type:size] relative h-full min-h-0 w-full overflow-hidden bg-card">
           {previewClips.map((clip) => {
             const runtimeAsset = runtimeAssets[clip.sourceAssetId]
+            const asset = project.sourceAssets.find(
+              (item) => item.id === clip.sourceAssetId
+            )
 
             if (!runtimeAsset) {
               return null
@@ -1396,6 +1625,7 @@ function PreviewStage({
               <PreviewVideoLayer
                 key={clip.id}
                 clip={clip}
+                asset={asset}
                 runtimeAsset={runtimeAsset}
                 playheadSeconds={playheadSeconds}
                 isPlaying={isPlaying}
@@ -1417,7 +1647,7 @@ function PreviewStage({
             </div>
           )}
           {previewIssue ? (
-            <div className="absolute inset-x-3 bottom-3 z-[2000] rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
+            <div className="absolute inset-x-3 bottom-3 z-[2000] rounded-lg border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
               {previewIssue}
             </div>
           ) : null}
@@ -1440,7 +1670,7 @@ function PreviewStage({
           })}
         </div>
       </div>
-      <div className="flex items-center justify-between px-4 py-3">
+      <div className="flex items-center px-4 py-3">
         <div className="flex items-center gap-2">
           <Button
             size="icon"
@@ -1455,7 +1685,6 @@ function PreviewStage({
             {formatDuration(projectDuration)}
           </span>
         </div>
-        <Badge variant="outline">Native media preview</Badge>
       </div>
     </section>
   )
@@ -1463,6 +1692,7 @@ function PreviewStage({
 
 function PreviewVideoLayer({
   clip,
+  asset,
   runtimeAsset,
   playheadSeconds,
   isPlaying,
@@ -1470,6 +1700,7 @@ function PreviewVideoLayer({
   onIssue,
 }: {
   clip: TimelineClip
+  asset?: SourceAsset
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
@@ -1479,6 +1710,8 @@ function PreviewVideoLayer({
   const videoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
   const [isFrameReady, setIsFrameReady] = useState(false)
+  const aspectRatio =
+    asset?.width && asset.height ? asset.width / asset.height : 16 / 9
 
   useEffect(() => {
     const player = videoRef.current
@@ -1570,10 +1803,15 @@ function PreviewVideoLayer({
     <video
       ref={videoRef}
       className={[
-        "absolute inset-0 block h-full w-full bg-card object-contain transition-opacity duration-75",
+        "absolute inset-0 m-auto block rounded-lg bg-card object-fill transition-opacity duration-75",
         isActive && isFrameReady ? "opacity-100" : "opacity-0",
       ].join(" ")}
-      style={{ zIndex: getPreviewLayerZIndex(clip) }}
+      style={{
+        aspectRatio: String(aspectRatio),
+        height: `min(100%, calc(100cqw / ${aspectRatio}))`,
+        width: `min(100%, calc(100cqh * ${aspectRatio}))`,
+        zIndex: getPreviewLayerZIndex(clip),
+      }}
       playsInline
       preload="auto"
       onError={() =>
@@ -1680,6 +1918,7 @@ function Timeline({
   selection,
   playheadSeconds,
   zoom,
+  viewportHeight,
   onSelect,
   onPlayheadChange,
   onClipChange,
@@ -1694,6 +1933,7 @@ function Timeline({
   selection: Selection
   playheadSeconds: number
   zoom: number
+  viewportHeight: number
   onSelect: (selection: Selection) => void
   onPlayheadChange: (seconds: number) => void
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
@@ -1706,14 +1946,16 @@ function Timeline({
     placement: TimelineDropPlacement
   ) => void
 }) {
+  const timelineItems = useMemo(
+    () => [...project.clips, ...project.musicTracks],
+    [project.clips, project.musicTracks]
+  )
   const duration = Math.max(12, getProjectDuration(project) + 3)
   const width = Math.max(duration * zoom, 1200)
-  const videoTrackCount = Math.max(2, getTrackCount(project.clips))
-  const audioTrackCount = Math.max(2, getTrackCount(project.musicTracks))
-  const audioTrackTop =
-    VIDEO_TRACK_TOP + videoTrackCount * (TRACK_HEIGHT + TRACK_GAP) + 16
+  const trackCount = Math.max(4, getTrackCount(timelineItems))
   const timelineHeight =
-    audioTrackTop + audioTrackCount * (TRACK_HEIGHT + TRACK_GAP) + 12
+    TIMELINE_TRACK_TOP + trackCount * (TRACK_HEIGHT + TRACK_GAP) + 12
+  const timelineContentHeight = Math.max(timelineHeight, viewportHeight)
   const tickInterval = getTimeTickInterval(zoom)
   const ticks = useMemo(() => {
     const count = Math.ceil(duration / tickInterval) + 1
@@ -1724,20 +1966,35 @@ function Timeline({
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
   const playheadSecondsRef = useRef(playheadSeconds)
+  const [timelineScrollLeft, setTimelineScrollLeft] = useState(0)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
   const [dropPreview, setDropPreview] = useState<TimelineDropPreview | null>(
     null
   )
-  const snapItems = useMemo(
-    () => [...project.clips, ...project.musicTracks],
-    [project.clips, project.musicTracks]
-  )
+  const snapItems = timelineItems
 
   useEffect(() => {
     zoomRef.current = zoom
     durationRef.current = duration
     playheadSecondsRef.current = playheadSeconds
   }, [duration, playheadSeconds, zoom])
+
+  function setTimelineScrollPosition(nextScrollLeft: number) {
+    const normalizedScrollLeft = Math.max(0, nextScrollLeft)
+
+    setTimelineScrollLeft((currentScrollLeft) =>
+      Math.abs(currentScrollLeft - normalizedScrollLeft) < 0.5
+        ? currentScrollLeft
+        : normalizedScrollLeft
+    )
+  }
+
+  function syncTimelineScrollVariable(scrollContainer: HTMLElement) {
+    scrollContainer.style.setProperty(
+      "--timeline-scroll-left",
+      `${Math.max(0, scrollContainer.scrollLeft)}px`
+    )
+  }
 
   useEffect(() => {
     const container = timelineRef.current
@@ -1747,6 +2004,8 @@ function Timeline({
     }
 
     const scrollContainer = container
+
+    syncTimelineScrollVariable(scrollContainer)
 
     function onWheel(event: WheelEvent) {
       const currentZoom = zoomRef.current
@@ -1770,11 +2029,19 @@ function Timeline({
           return
         }
 
-        onZoomChange(Number(nextZoom.toFixed(2)))
+        const roundedZoom = Number(nextZoom.toFixed(2))
+        const nextScrollLeft = Math.max(
+          0,
+          secondsAtCursor * roundedZoom - cursorX
+        )
 
-        requestAnimationFrame(() => {
-          scrollContainer.scrollLeft = secondsAtCursor * nextZoom - cursorX
+        zoomRef.current = roundedZoom
+        flushSync(() => {
+          setTimelineScrollPosition(nextScrollLeft)
+          onZoomChange(roundedZoom)
         })
+        scrollContainer.scrollLeft = nextScrollLeft
+        syncTimelineScrollVariable(scrollContainer)
 
         return
       }
@@ -1782,6 +2049,8 @@ function Timeline({
       if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
         event.preventDefault()
         scrollContainer.scrollLeft += event.deltaX
+        syncTimelineScrollVariable(scrollContainer)
+        setTimelineScrollPosition(scrollContainer.scrollLeft)
       }
     }
 
@@ -1806,12 +2075,15 @@ function Timeline({
 
     const anchorSeconds = playheadSecondsRef.current
     const anchorX = scrollContainer.clientWidth / 2
+    const nextScrollLeft = Math.max(0, anchorSeconds * clampedZoom - anchorX)
 
-    onZoomChange(clampedZoom)
-
-    requestAnimationFrame(() => {
-      scrollContainer.scrollLeft = anchorSeconds * clampedZoom - anchorX
+    zoomRef.current = clampedZoom
+    flushSync(() => {
+      setTimelineScrollPosition(nextScrollLeft)
+      onZoomChange(clampedZoom)
     })
+    scrollContainer.scrollLeft = nextScrollLeft
+    syncTimelineScrollVariable(scrollContainer)
   }
 
   function getSecondsFromPointer(event: PointerEvent<HTMLDivElement>) {
@@ -1832,6 +2104,11 @@ function Timeline({
     setHoverSeconds(getSecondsFromPointer(event))
   }
 
+  function updateTimelineScroll(event: UIEvent<HTMLDivElement>) {
+    syncTimelineScrollVariable(event.currentTarget)
+    setTimelineScrollPosition(event.currentTarget.scrollLeft)
+  }
+
   function updateDropPreview(event: DragEvent<HTMLDivElement>) {
     if (!hasDraggedFiles(event.dataTransfer)) {
       return
@@ -1839,7 +2116,7 @@ function Timeline({
 
     event.preventDefault()
     event.stopPropagation()
-    setDropPreview(getTimelineDropPreview(event, zoom, duration, audioTrackTop))
+    setDropPreview(getTimelineDropPreview(event, zoom, duration))
   }
 
   async function dropFilesOnTimeline(event: DragEvent<HTMLDivElement>) {
@@ -1849,9 +2126,7 @@ function Timeline({
 
     event.preventDefault()
     event.stopPropagation()
-    const preview =
-      dropPreview ??
-      getTimelineDropPreview(event, zoom, duration, audioTrackTop)
+    const preview = dropPreview ?? getTimelineDropPreview(event, zoom, duration)
     const dropped = await getDroppedLocalFiles(event.dataTransfer)
 
     setDropPreview(null)
@@ -1862,14 +2137,9 @@ function Timeline({
   }
 
   return (
-    <section
-      className={`min-h-0 max-w-full min-w-0 overflow-hidden ${CARD_CLASS}`}
-    >
+    <section className={`min-h-0 max-w-full min-w-0 ${CARD_CLASS}`}>
       <div className="flex h-10 min-w-0 items-center justify-between gap-3 px-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Badge variant="outline">
-            {formatDuration(getProjectDuration(project))}
-          </Badge>
           <span className="truncate text-xs text-muted-foreground">
             Drag clips to move, drag edges to trim, click the ruler to scrub.
           </span>
@@ -1906,202 +2176,216 @@ function Timeline({
       </div>
 
       <div
-        className="grid h-[178px] min-w-0 overflow-y-auto"
+        className="grid min-w-0 overflow-y-auto"
         style={{
+          height: viewportHeight,
           gridTemplateColumns: `${TRACK_HEADER_WIDTH}px minmax(0, 1fr)`,
         }}
       >
-        <div className="relative" style={{ minHeight: timelineHeight }}>
+        <div className="relative" style={{ minHeight: timelineContentHeight }}>
           <div style={{ height: RULER_HEIGHT }} />
-          {Array.from({ length: videoTrackCount }, (_, index) => (
+          {Array.from({ length: trackCount }, (_, index) => (
             <TrackLabel
-              key={`video-${index}`}
-              icon={<Film className="size-4" />}
-              label={`Video ${index + 1}`}
-              top={getVideoTrackTop(index)}
-            />
-          ))}
-          {Array.from({ length: audioTrackCount }, (_, index) => (
-            <TrackLabel
-              key={`audio-${index}`}
-              icon={<FileAudio className="size-4" />}
-              label={`Audio ${index + 1}`}
-              top={getAudioTrackTop(index, audioTrackTop)}
+              key={`track-${index}`}
+              label={String(index + 1)}
+              top={getTimelineTrackTop(index)}
             />
           ))}
         </div>
         <div
-          ref={timelineRef}
-          data-timeline-drop-zone="true"
-          className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain"
-          style={{
-            contain: "layout paint",
-            minHeight: timelineHeight,
-            scrollbarGutter: "stable",
-          }}
-          onPointerDown={seekFromPointer}
-          onPointerMove={updateHover}
-          onPointerLeave={() => setHoverSeconds(null)}
-          onDragEnter={updateDropPreview}
-          onDragOver={updateDropPreview}
-          onDragLeave={(event) => {
-            if (
-              !event.currentTarget.contains(event.relatedTarget as Node | null)
-            ) {
-              setDropPreview(null)
-            }
-          }}
-          onDrop={dropFilesOnTimeline}
+          className="relative min-w-0"
+          style={{ minHeight: timelineContentHeight }}
         >
           <div
-            className="relative min-h-full max-w-none"
-            style={{ minHeight: timelineHeight, minWidth: width, width }}
+            className="pointer-events-none sticky top-0 z-[60] overflow-hidden"
+            style={{
+              height: viewportHeight,
+              marginBottom: -viewportHeight,
+            }}
           >
-            {ticks.map((seconds) => (
-              <div
-                key={`grid-${seconds}`}
-                className="pointer-events-none absolute top-0 bottom-0 w-px bg-border/70"
-                style={{ left: seconds * zoom }}
-              />
-            ))}
-            <div className="sticky top-0 z-10" style={{ height: RULER_HEIGHT }}>
+            <div
+              className="absolute inset-x-0 top-0 bg-card/95"
+              style={{ height: RULER_HEIGHT }}
+            >
               {ticks.map((seconds) => (
                 <div
                   key={seconds}
                   className="absolute top-0 h-full border-l px-1 pt-1 font-mono text-[10px] text-muted-foreground"
-                  style={{ left: seconds * zoom }}
+                  style={{ left: seconds * zoom - timelineScrollLeft }}
                 >
                   {formatDuration(seconds)}
                 </div>
               ))}
-              {hoverSeconds === null ? null : (
-                <div
-                  className="absolute top-0 h-full w-px bg-primary/35"
-                  style={{ left: hoverSeconds * zoom }}
-                />
-              )}
-              <div
-                className="absolute top-0 h-full w-px bg-primary"
-                style={{ left: playheadSeconds * zoom }}
-              />
             </div>
-            <div
-              className="absolute bottom-0 w-px bg-primary"
-              style={{ top: RULER_HEIGHT, left: playheadSeconds * zoom }}
-            />
             {hoverSeconds === null ? null : (
               <div
-                className="pointer-events-none absolute bottom-0 w-px bg-primary/25"
-                style={{ top: RULER_HEIGHT, left: hoverSeconds * zoom }}
+                className="absolute top-0 bottom-0 z-[61] w-px bg-primary/35"
+                style={{ left: hoverSeconds * zoom - timelineScrollLeft }}
               />
             )}
-            {Array.from({ length: videoTrackCount }, (_, index) => (
-              <TrackLane
-                key={`video-lane-${index}`}
-                top={getVideoTrackTop(index)}
-              />
-            ))}
-            {Array.from({ length: audioTrackCount }, (_, index) => (
-              <TrackLane
-                key={`audio-lane-${index}`}
-                top={getAudioTrackTop(index, audioTrackTop)}
-              />
-            ))}
-            {dropPreview ? (
-              <div
-                className="pointer-events-none absolute z-20 rounded-md border border-dashed border-primary bg-primary/15 ring-2 ring-primary/20"
-                style={{
-                  top: dropPreview.top,
-                  left: dropPreview.left,
-                  width: dropPreview.width,
-                  height: TRACK_HEIGHT,
-                }}
-              />
-            ) : null}
-            {project.clips.map((clip) => {
-              const asset = project.sourceAssets.find(
-                (item) => item.id === clip.sourceAssetId
-              )
-              const connected = Boolean(runtimeAssets[clip.sourceAssetId])
-              const trackIndex = getTrackIndex(clip)
-
-              return (
-                <TimelineItem
-                  key={clip.id}
-                  top={getVideoTrackTop(trackIndex)}
-                  left={clip.timelineStartSeconds * zoom}
-                  width={getClipDuration(clip) * zoom}
-                  selected={
-                    selection.type === "clip" && selection.id === clip.id
-                  }
-                  label={asset?.name ?? "Missing video"}
-                  muted={clip.muted}
-                  connected={connected}
-                  onSelect={() => onSelect({ type: "clip", id: clip.id })}
-                  onDragPreview={(mode, deltaSeconds, deltaTracks) =>
-                    getTimelineItemDragPreview(
-                      clip,
-                      project.clips,
-                      snapItems,
-                      mode,
-                      deltaSeconds,
-                      deltaTracks,
-                      zoom,
-                      getVideoTrackTop
-                    )
-                  }
-                  onDragCommit={(preview) =>
-                    onClipChange(
-                      clip.id,
-                      preview.patch as Partial<TimelineClip>
-                    )
-                  }
-                  zoom={zoom}
+            <div
+              className="absolute top-0 bottom-0 z-[62] w-px bg-primary"
+              style={{
+                left:
+                  playheadSeconds * zoom -
+                  timelineScrollLeft +
+                  TIMELINE_PLAYHEAD_LINE_OFFSET_PX,
+              }}
+            />
+            <div
+              className="absolute top-1 z-[63] size-2 -translate-x-1/2 rotate-45 rounded-[2px] bg-primary"
+              style={{
+                left:
+                  playheadSeconds * zoom -
+                  timelineScrollLeft +
+                  TIMELINE_PLAYHEAD_CAP_OFFSET_PX,
+              }}
+            />
+          </div>
+          <div
+            ref={timelineRef}
+            data-timeline-drop-zone="true"
+            className="absolute inset-0 h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain"
+            style={{
+              contain: "layout paint",
+              minHeight: timelineContentHeight,
+              scrollbarGutter: "stable",
+              "--timeline-scroll-left": "0px",
+            } as CSSProperties}
+            onPointerDown={seekFromPointer}
+            onPointerMove={updateHover}
+            onPointerLeave={() => setHoverSeconds(null)}
+            onScroll={updateTimelineScroll}
+            onDragEnter={updateDropPreview}
+            onDragOver={updateDropPreview}
+            onDragLeave={(event) => {
+              if (
+                !event.currentTarget.contains(
+                  event.relatedTarget as Node | null
+                )
+              ) {
+                setDropPreview(null)
+              }
+            }}
+            onDrop={dropFilesOnTimeline}
+          >
+            <div
+              className="relative min-h-full max-w-none"
+              style={{
+                minHeight: timelineContentHeight,
+                minWidth: width,
+                width,
+              }}
+            >
+              {ticks.map((seconds) => (
+                <div
+                  key={`grid-${seconds}`}
+                  className="pointer-events-none absolute top-0 bottom-0 w-px bg-border/70"
+                  style={{ left: seconds * zoom }}
                 />
-              )
-            })}
-            {project.musicTracks.map((track) => {
-              const asset = project.sourceAssets.find(
-                (item) => item.id === track.sourceAssetId
-              )
-              const connected = Boolean(runtimeAssets[track.sourceAssetId])
-              const trackIndex = getTrackIndex(track)
-
-              return (
-                <TimelineItem
-                  key={track.id}
-                  top={getAudioTrackTop(trackIndex, audioTrackTop)}
-                  left={track.timelineStartSeconds * zoom}
-                  width={getClipDuration(track) * zoom}
-                  selected={
-                    selection.type === "music" && selection.id === track.id
-                  }
-                  label={asset?.name ?? "Missing audio"}
-                  muted={false}
-                  connected={connected}
-                  onSelect={() => onSelect({ type: "music", id: track.id })}
-                  onDragPreview={(mode, deltaSeconds, deltaTracks) =>
-                    getTimelineItemDragPreview(
-                      track,
-                      project.musicTracks,
-                      snapItems,
-                      mode,
-                      deltaSeconds,
-                      deltaTracks,
-                      zoom,
-                      (index) => getAudioTrackTop(index, audioTrackTop)
-                    )
-                  }
-                  onDragCommit={(preview) =>
-                    onMusicChange(
-                      track.id,
-                      preview.patch as Partial<MusicTrack>
-                    )
-                  }
-                  zoom={zoom}
+              ))}
+              {Array.from({ length: trackCount }, (_, index) => (
+                <TrackLane
+                  key={`track-lane-${index}`}
+                  top={getTimelineTrackTop(index)}
                 />
-              )
-            })}
+              ))}
+              {dropPreview ? (
+                <div
+                  className="pointer-events-none absolute z-20 rounded-lg border border-dashed border-primary bg-primary/15 ring-2 ring-primary/20"
+                  style={{
+                    top: dropPreview.top,
+                    left: dropPreview.left,
+                    width: dropPreview.width,
+                    height: TRACK_HEIGHT,
+                  }}
+                />
+              ) : null}
+              {project.clips.map((clip) => {
+                const asset = project.sourceAssets.find(
+                  (item) => item.id === clip.sourceAssetId
+                )
+                const connected = Boolean(runtimeAssets[clip.sourceAssetId])
+                const trackIndex = getTrackIndex(clip)
+
+                return (
+                  <TimelineItem
+                    key={clip.id}
+                    top={getTimelineTrackTop(trackIndex)}
+                    left={clip.timelineStartSeconds * zoom}
+                    width={getClipDuration(clip) * zoom}
+                    selected={
+                      selection.type === "clip" && selection.id === clip.id
+                    }
+                    label={asset?.name ?? "Missing video"}
+                    muted={clip.muted}
+                    connected={connected}
+                    onSelect={() => onSelect({ type: "clip", id: clip.id })}
+                    onDragPreview={(mode, deltaSeconds, deltaTracks) =>
+                      getTimelineItemDragPreview(
+                        clip,
+                        timelineItems,
+                        snapItems,
+                        mode,
+                        deltaSeconds,
+                        deltaTracks,
+                        zoom,
+                        getTimelineTrackTop
+                      )
+                    }
+                    onDragCommit={(preview) =>
+                      onClipChange(
+                        clip.id,
+                        preview.patch as Partial<TimelineClip>
+                      )
+                    }
+                    zoom={zoom}
+                  />
+                )
+              })}
+              {project.musicTracks.map((track) => {
+                const asset = project.sourceAssets.find(
+                  (item) => item.id === track.sourceAssetId
+                )
+                const connected = Boolean(runtimeAssets[track.sourceAssetId])
+                const trackIndex = getTrackIndex(track)
+
+                return (
+                  <TimelineItem
+                    key={track.id}
+                    top={getTimelineTrackTop(trackIndex)}
+                    left={track.timelineStartSeconds * zoom}
+                    width={getClipDuration(track) * zoom}
+                    selected={
+                      selection.type === "music" && selection.id === track.id
+                    }
+                    label={asset?.name ?? "Missing audio"}
+                    muted={false}
+                    connected={connected}
+                    onSelect={() => onSelect({ type: "music", id: track.id })}
+                    onDragPreview={(mode, deltaSeconds, deltaTracks) =>
+                      getTimelineItemDragPreview(
+                        track,
+                        timelineItems,
+                        snapItems,
+                        mode,
+                        deltaSeconds,
+                        deltaTracks,
+                        zoom,
+                        getTimelineTrackTop
+                      )
+                    }
+                    onDragCommit={(preview) =>
+                      onMusicChange(
+                        track.id,
+                        preview.patch as Partial<MusicTrack>
+                      )
+                    }
+                    zoom={zoom}
+                  />
+                )
+              })}
+            </div>
           </div>
         </div>
       </div>
@@ -2148,10 +2432,13 @@ function TimelineItem({
   const [preview, setPreview] = useState<TimelineItemDragPreview | null>(null)
   const stylePreview = preview ?? { top, left, width }
   const showHandles = stylePreview.width >= TIMELINE_HANDLE_MIN_WIDTH
-  const contentClassName = [
-    "flex h-full items-center justify-between gap-2",
-    showHandles ? "pr-3 pl-4" : "px-2.5",
-  ].join(" ")
+  const leadingInset = showHandles ? 16 : 10
+  const trailingInset = muted ? 24 : leadingInset
+  const labelViewportWidth = Math.max(
+    0,
+    stylePreview.width - leadingInset - trailingInset
+  )
+  const maxLabelOffset = Math.max(0, labelViewportWidth - 24)
   const handleClassName = [
     "absolute top-1/2 z-10 h-5 w-1 -translate-y-1/2 cursor-ew-resize rounded-full",
     selected ? "bg-primary-foreground/80" : "bg-foreground/25",
@@ -2221,7 +2508,7 @@ function TimelineItem({
   return (
     <div
       className={[
-        "absolute overflow-hidden rounded-md border text-xs",
+        "absolute overflow-hidden rounded-lg border text-xs",
         selected
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border bg-background",
@@ -2233,7 +2520,9 @@ function TimelineItem({
         left: stylePreview.left,
         width: stylePreview.width,
         height: TRACK_HEIGHT,
-      }}
+        "--timeline-item-left": `${stylePreview.left}px`,
+        "--timeline-label-max-offset": `${maxLabelOffset}px`,
+      } as CSSProperties}
       onPointerDown={(event) => startDrag(event, "move")}
       onPointerMove={moveDrag}
       onPointerUp={endDrag}
@@ -2245,10 +2534,28 @@ function TimelineItem({
           onPointerDown={(event) => startDrag(event, "start")}
         />
       ) : null}
-      <div className={contentClassName}>
-        <span className="truncate">{label}</span>
-        {muted ? <VolumeX className="size-3 shrink-0" /> : null}
+      <div
+        className="pointer-events-none absolute top-0 bottom-0 overflow-hidden"
+        style={{
+          left: leadingInset,
+          right: trailingInset,
+        }}
+      >
+        <span
+          className="absolute top-0 bottom-0 flex min-w-0 items-center"
+          style={{
+            left:
+              "clamp(0px, calc(var(--timeline-scroll-left, 0px) - var(--timeline-item-left, 0px)), var(--timeline-label-max-offset, 0px))",
+            right: 0,
+          }}
+          title={label}
+        >
+          <span className="block min-w-0 truncate">{label}</span>
+        </span>
       </div>
+      {muted ? (
+        <VolumeX className="absolute top-1/2 right-2 size-3 -translate-y-1/2" />
+      ) : null}
       {showHandles ? (
         <div
           className={`${handleClassName} right-1`}
@@ -2276,23 +2583,15 @@ function isPointerInsideTimelineDropZone(event: PointerEvent<HTMLElement>) {
   )
 }
 
-function TrackLabel({
-  icon,
-  label,
-  top,
-}: {
-  icon: ReactNode
-  label: string
-  top: number
-}) {
+function TrackLabel({ label, top }: { label: string; top: number }) {
   return (
     <div
-      className="absolute left-5 z-20 grid size-4 place-items-center text-muted-foreground"
-      style={{ top: top + (TRACK_HEIGHT - 16) / 2 }}
+      className="absolute inset-x-0 z-20 grid h-5 place-items-center text-[10px] font-medium text-muted-foreground"
+      style={{ top: top + (TRACK_HEIGHT - 20) / 2 }}
       aria-label={label}
       title={label}
     >
-      {icon}
+      {label}
     </div>
   )
 }
@@ -2300,7 +2599,7 @@ function TrackLabel({
 function TrackLane({ top }: { top: number }) {
   return (
     <div
-      className="absolute inset-x-0 rounded-md"
+      className="absolute inset-x-0 rounded-lg"
       style={{ top, height: TRACK_HEIGHT }}
     />
   )
@@ -2320,19 +2619,22 @@ function RangeField({
   onChange: (value: number) => void
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <Label className="text-xs">{label}</Label>
-        <span className="font-mono text-xs text-muted-foreground">
-          {Math.round(value * 100)}%
-        </span>
-      </div>
-      <Slider
-        value={[value]}
+    <div className="space-y-1">
+      <SliderComfortable
+        value={value}
         min={0}
         max={max}
         step={step}
-        onValueChange={(next) => onChange(getSliderValue(next, value))}
+        variant="scrubber"
+        label={label}
+        formatValue={(nextValue) => `${Math.round(nextValue * 100)}%`}
+        onChange={(nextValue) => {
+          if (Object.is(nextValue, value)) {
+            return
+          }
+
+          onChange(nextValue)
+        }}
       />
     </div>
   )
@@ -2348,8 +2650,10 @@ function NumberField({
   onChange: (value: number) => void
 }) {
   return (
-    <div className="space-y-2">
-      <Label className="text-xs">{label}</Label>
+    <div className="space-y-1">
+      <Label className="text-xs font-normal text-muted-foreground">
+        {label}
+      </Label>
       <Input
         className="select-text"
         type="number"
@@ -2364,10 +2668,45 @@ function NumberField({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-background px-3 py-2">
+    <div className="flex items-center justify-between gap-3 rounded-lg bg-background px-3 py-2">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
     </div>
+  )
+}
+
+function ResizeGapHandle({
+  orientation,
+  active,
+  ...props
+}: {
+  orientation: "vertical" | "horizontal"
+  active: boolean
+} & Omit<ComponentPropsWithoutRef<"button">, "type">) {
+  const isVertical = orientation === "vertical"
+
+  return (
+    <button
+      {...props}
+      type="button"
+      className={[
+        "rounded-full transition-[width,height] duration-150",
+        isVertical ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize",
+        active
+          ? "bg-primary"
+          : "bg-muted-foreground/25 hover:bg-muted-foreground/45",
+        isVertical
+          ? active
+            ? "h-20"
+            : "h-10 hover:h-16"
+          : active
+            ? "w-24"
+            : "w-12 hover:w-20",
+        props.className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    />
   )
 }
 
@@ -2378,7 +2717,6 @@ type TimelineDroppedFile = {
   fileHandle?: FileSystemFileHandle
 }
 type TimelineDropPlacement = {
-  kind: SourceAsset["type"]
   timelineStartSeconds: number
   trackIndex: number
 }
@@ -2406,19 +2744,14 @@ function getTrackCount(items: { trackIndex?: number }[]) {
   )
 }
 
-function getVideoTrackTop(trackIndex: number) {
-  return VIDEO_TRACK_TOP + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
-}
-
-function getAudioTrackTop(trackIndex: number, audioTrackTop: number) {
-  return audioTrackTop + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
+function getTimelineTrackTop(trackIndex: number) {
+  return TIMELINE_TRACK_TOP + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
 }
 
 function getTimelineDropPreview(
   event: DragEvent<HTMLDivElement>,
   zoom: number,
-  duration: number,
-  audioTrackTop: number
+  duration: number
 ): TimelineDropPreview {
   const container = event.currentTarget
   const rect = container.getBoundingClientRect()
@@ -2429,22 +2762,16 @@ function getTimelineDropPreview(
     zoom,
     duration
   )
-  const isAudio = y >= audioTrackTop - TRACK_GAP
-  const trackBaseTop = isAudio ? audioTrackTop : VIDEO_TRACK_TOP
   const trackIndex = Math.max(
     0,
-    Math.round((y - trackBaseTop) / (TRACK_HEIGHT + TRACK_GAP))
+    Math.round((y - TIMELINE_TRACK_TOP) / (TRACK_HEIGHT + TRACK_GAP))
   )
-  const kind = isAudio ? "audio" : "video"
 
   return {
-    top: isAudio
-      ? getAudioTrackTop(trackIndex, audioTrackTop)
-      : getVideoTrackTop(trackIndex),
+    top: getTimelineTrackTop(trackIndex),
     left: timelineStartSeconds * zoom,
     width: Math.max(72, 5 * zoom),
     placement: {
-      kind,
       timelineStartSeconds,
       trackIndex,
     },
@@ -2457,7 +2784,7 @@ function hasDraggedFiles(dataTransfer: DataTransfer) {
 
 function getTimelineItemDragPreview<T extends TimelineItemData>(
   item: T,
-  laneItems: T[],
+  laneItems: TimelineItemData[],
   snapItems: TimelineItemData[],
   mode: TimelineDragMode,
   deltaSeconds: number,
@@ -2605,7 +2932,7 @@ function findNearestAvailableTrackIndex(
 
 function constrainTimelineItemPatch<T extends TimelineItemData>(
   item: T,
-  items: T[],
+  items: TimelineItemData[],
   patch: Partial<T>,
   snapItems: TimelineItemData[] = items
 ): T {
@@ -2945,6 +3272,54 @@ function getTimelineSeconds(
 
 function getSliderValue(value: number | readonly number[], fallback: number) {
   return Array.isArray(value) ? (value[0] ?? fallback) : value
+}
+
+function getStoredEditorLayoutValue(
+  key: "inspectorWidth" | "timelinePanelHeight",
+  fallback: number,
+  min: number,
+  max: number
+) {
+  if (typeof window === "undefined") {
+    return fallback
+  }
+
+  try {
+    const stored = window.localStorage.getItem(EDITOR_LAYOUT_STORAGE_KEY)
+
+    if (!stored) {
+      return fallback
+    }
+
+    const parsed = JSON.parse(stored) as Partial<
+      Record<"inspectorWidth" | "timelinePanelHeight", number>
+    >
+    const value = parsed[key]
+
+    return typeof value === "number" && Number.isFinite(value)
+      ? clamp(value, min, max)
+      : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function saveEditorLayout(layout: {
+  inspectorWidth: number
+  timelinePanelHeight: number
+}) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(
+      EDITOR_LAYOUT_STORAGE_KEY,
+      JSON.stringify(layout)
+    )
+  } catch {
+    // Ignore layout persistence failures; the editor can still use defaults.
+  }
 }
 
 function clamp(value: number, min: number, max: number) {

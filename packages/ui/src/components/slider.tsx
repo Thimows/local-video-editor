@@ -1,6 +1,43 @@
-import { Slider as SliderPrimitive } from "@base-ui/react/slider"
+"use client"
 
+import { useState } from "react"
+
+import {
+  Slider as FluidSlider,
+  type SliderProps as FluidSliderProps,
+  type SliderValue as FluidSliderValue,
+} from "@workspace/ui/components/ui/slider"
 import { cn } from "@workspace/ui/lib/utils"
+
+type CompatSliderValue = number | readonly number[]
+
+type SliderProps = Omit<FluidSliderProps, "value" | "onChange"> & {
+  value?: CompatSliderValue
+  defaultValue?: CompatSliderValue
+  onChange?: (value: FluidSliderValue) => void
+  onValueChange?: (value: number[]) => void
+}
+
+function normalizeValue(
+  value: CompatSliderValue | undefined,
+  fallback: number
+): FluidSliderValue {
+  if (Array.isArray(value)) {
+    const firstValue = value[0] ?? fallback
+
+    if (value.length > 1) {
+      return [firstValue, value[1] ?? firstValue] as [number, number]
+    }
+
+    return firstValue
+  }
+
+  return typeof value === "number" ? value : fallback
+}
+
+function toValueArray(value: FluidSliderValue): number[] {
+  return Array.isArray(value) ? value : [value]
+}
 
 function Slider({
   className,
@@ -8,45 +45,42 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  step = 1,
+  showValue = false,
+  valuePosition = "tooltip",
+  onChange,
+  onValueChange,
   ...props
-}: SliderPrimitive.Root.Props) {
-  const _values = Array.isArray(value)
-    ? value
-    : Array.isArray(defaultValue)
-      ? defaultValue
-      : [min, max]
+}: SliderProps) {
+  const [uncontrolledValue, setUncontrolledValue] = useState<FluidSliderValue>(
+    () => normalizeValue(defaultValue ?? value, min)
+  )
+  const sliderValue =
+    value === undefined ? uncontrolledValue : normalizeValue(value, min)
+
+  function handleChange(nextValue: FluidSliderValue) {
+    if (value === undefined) {
+      setUncontrolledValue(nextValue)
+    }
+
+    onChange?.(nextValue)
+    onValueChange?.(toValueArray(nextValue))
+  }
 
   return (
-    <SliderPrimitive.Root
-      className={cn("data-horizontal:w-full data-vertical:h-full", className)}
-      data-slot="slider"
-      defaultValue={defaultValue}
-      value={value}
+    <FluidSlider
+      className={cn("overflow-visible", className)}
+      value={sliderValue}
+      onChange={handleChange}
       min={min}
       max={max}
-      thumbAlignment="edge"
+      step={step}
+      showValue={showValue}
+      valuePosition={valuePosition}
       {...props}
-    >
-      <SliderPrimitive.Control className="relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:min-h-40 data-vertical:w-auto data-vertical:flex-col">
-        <SliderPrimitive.Track
-          data-slot="slider-track"
-          className="relative grow overflow-hidden rounded-full bg-muted select-none data-horizontal:h-1 data-horizontal:w-full data-vertical:h-full data-vertical:w-1"
-        >
-          <SliderPrimitive.Indicator
-            data-slot="slider-range"
-            className="bg-primary select-none data-horizontal:h-full data-vertical:w-full"
-          />
-        </SliderPrimitive.Track>
-        {Array.from({ length: _values.length }, (_, index) => (
-          <SliderPrimitive.Thumb
-            data-slot="slider-thumb"
-            key={index}
-            className="relative block size-3 shrink-0 rounded-full border border-ring bg-white ring-ring/50 transition-[color,box-shadow] select-none after:absolute after:-inset-2 hover:ring-3 focus-visible:ring-3 focus-visible:outline-hidden active:ring-3 disabled:pointer-events-none disabled:opacity-50"
-          />
-        ))}
-      </SliderPrimitive.Control>
-    </SliderPrimitive.Root>
+    />
   )
 }
 
 export { Slider }
+export type { SliderProps }

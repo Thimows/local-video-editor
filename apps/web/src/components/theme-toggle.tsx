@@ -1,6 +1,10 @@
 "use client"
 
-import { Monitor, Moon, Sun } from "lucide-react"
+import {
+  IconDeviceDesktopFilled as Monitor,
+  IconMoonFilled as Moon,
+  IconSunFilled as Sun,
+} from "@tabler/icons-react"
 import { useTheme } from "next-themes"
 
 import { Button } from "@workspace/ui/components/button"
@@ -10,7 +14,7 @@ import {
   TooltipTrigger,
 } from "@workspace/ui/components/tooltip"
 
-export function ThemeToggle() {
+export function ThemeToggle({ size = "icon" }: { size?: "icon" | "icon-sm" }) {
   const { theme, setTheme } = useTheme()
 
   const nextTheme =
@@ -23,7 +27,7 @@ export function ThemeToggle() {
           <Button
             type="button"
             variant="outline"
-            size="icon"
+            size={size}
             aria-label="Toggle theme"
             onClick={() => setTheme(nextTheme)}
           />

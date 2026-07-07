@@ -2,7 +2,13 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { ArrowRight, Film, FolderPlus, HardDrive, Trash2 } from "lucide-react"
+import {
+  IconArrowRightCircleFilled as ArrowRight,
+  IconCirclePlusFilled as FolderPlus,
+  IconDatabaseFilled as HardDrive,
+  IconTrashFilled as Trash2,
+  IconVideoFilled as Film,
+} from "@tabler/icons-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
