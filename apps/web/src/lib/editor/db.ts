@@ -3,7 +3,7 @@ import type { Project, ProjectSummary } from "./types"
 const DB_NAME = "local-video-editor"
 const DB_VERSION = 1
 const PROJECT_STORE = "projects"
-const MAX_PERSISTED_FILE_BLOB_BYTES = 250 * 1024 * 1024
+const MAX_PERSISTED_FILE_BLOB_BYTES = 1024 * 1024 * 1024
 
 function ensureBrowser() {
   if (typeof window === "undefined" || !("indexedDB" in window)) {
