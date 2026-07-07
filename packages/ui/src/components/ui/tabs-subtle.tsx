@@ -5,6 +5,7 @@ import {
   useState,
   useCallback,
   useEffect,
+  useLayoutEffect,
   createContext,
   useContext,
   forwardRef,
@@ -19,6 +20,11 @@ import { spring } from "@workspace/ui/lib/springs";
 import { fontWeights } from "@workspace/ui/lib/font-weight";
 import { useShape } from "@workspace/ui/lib/shape-context";
 import { useProximityHover } from "@workspace/ui/hooks/use-proximity-hover";
+
+const activeLabelSelectedSpring = {
+  ...spring.moderate,
+  duration: 0.18,
+};
 
 interface TabsSubtleContextValue {
   registerTab: (index: number, element: HTMLElement | null) => void;
@@ -77,6 +83,22 @@ const TabsSubtle = forwardRef<HTMLDivElement, TabsSubtleProps>(
     useEffect(() => {
       measureTabs();
     }, [measureTabs, children]);
+
+    useLayoutEffect(() => {
+      if (!activeLabel) return;
+
+      measureTabs();
+      let secondFrame = 0;
+      const firstFrame = requestAnimationFrame(() => {
+        measureTabs();
+        secondFrame = requestAnimationFrame(measureTabs);
+      });
+
+      return () => {
+        cancelAnimationFrame(firstFrame);
+        cancelAnimationFrame(secondFrame);
+      };
+    }, [activeLabel, measureTabs, selectedIndex]);
 
     // Observe individual tab buttons for resize (label expand/collapse in activeLabel mode)
     useEffect(() => {
@@ -173,7 +195,7 @@ const TabsSubtle = forwardRef<HTMLDivElement, TabsSubtleProps>(
                     opacity: isHovering ? 0.8 : 1,
                   }}
                   transition={{
-                    ...spring.moderate,
+                    ...(activeLabel ? activeLabelSelectedSpring : spring.moderate),
                     opacity: { duration: 0.08 },
                   }}
                 />
@@ -338,23 +360,7 @@ const TabsSubtleItem = forwardRef<HTMLButtonElement, TabsSubtleItemProps>(
           />
         )}
         {collapseLabel ? (
-          <AnimatePresence initial={false}>
-            {showLabel && (
-              <motion.span
-                key="label"
-                className="overflow-hidden"
-                initial={{ width: 0, opacity: 0, marginLeft: 0 }}
-                animate={{ width: "auto", opacity: 1, marginLeft: 8 }}
-                exit={{ width: 0, opacity: 0, marginLeft: 0 }}
-                transition={{
-                  ...spring.fast,
-                  opacity: { duration: 0.06 },
-                }}
-              >
-                {labelContent}
-              </motion.span>
-            )}
-          </AnimatePresence>
+          showLabel ? <span className="ml-2 overflow-hidden">{labelContent}</span> : null
         ) : (
           labelContent
         )}

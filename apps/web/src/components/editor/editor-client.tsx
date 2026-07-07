@@ -2,14 +2,20 @@
 
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
+import { useTheme } from "next-themes"
 import {
   IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
+  IconDeviceDesktopFilled as Monitor,
+  IconDots as Dots,
+  IconExclamationCircleFilled as CircleExclamation,
   IconFileDownloadFilled as Download,
   IconMagnet as Magnet,
   IconMagnetOff as MagnetOff,
+  IconMoonFilled as Moon,
   IconScissors as Scissors,
+  IconSunFilled as Sun,
   IconTrash as Trash,
   IconFileUploadFilled as Upload,
   IconFolderOpenFilled as FolderOpen,
@@ -23,6 +29,7 @@ import {
 import type {
   ChangeEvent,
   ComponentPropsWithoutRef,
+  ComponentType,
   CSSProperties,
   DragEvent,
   PointerEvent,
@@ -31,7 +38,6 @@ import type {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
-import { ThemeToggle } from "@/components/theme-toggle"
 import { exportProjectToVideo } from "@/lib/editor/export-video"
 import {
   clearPreviewAudioDebug,
@@ -44,8 +50,10 @@ import {
 import {
   chooseLocalFiles,
   createRuntimeAsset,
+  type FileRestoreDiagnostic,
   getDroppedLocalFiles,
   getFileKind,
+  type MediaMetadata,
   readMediaMetadata,
   requestPersistentStorage,
   restoreProjectFileHandles,
@@ -89,6 +97,7 @@ import { Progress, ProgressLabel } from "@workspace/ui/components/progress"
 import { Slider } from "@workspace/ui/components/slider"
 import {
   DropdownContent,
+  DropdownLabel,
   DropdownMenu,
   DropdownTrigger,
 } from "@workspace/ui/components/ui/dropdown"
@@ -119,10 +128,13 @@ const TIMELINE_PRECISION_SECONDS = 1_000
 const TIMELINE_HANDLE_MIN_WIDTH = 34
 const TIMELINE_DRAG_START_THRESHOLD_PX = 3
 const TIMELINE_CONTENT_INSET_X = 36
+const TIMELINE_DROP_FALLBACK_DURATION_SECONDS = 12
+const TIMELINE_DROP_FALLBACK_MIN_WIDTH = 120
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
 const WAVEFORM_MIN_VISIBLE_VOLUME = 0.001
+const MAX_PERSISTED_FILE_BLOB_BYTES = 250 * 1024 * 1024
 const CARD_CLASS = "rounded-xl bg-card"
 const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
 const DEFAULT_INSPECTOR_WIDTH = 320
@@ -211,12 +223,43 @@ type TimelineItemPreviewPatch =
       type: "clip"
       id: string
       patch: Partial<TimelineClip>
+      insertTrackAtTop?: boolean
     }
   | {
       type: "music"
       id: string
       patch: Partial<MusicTrack>
+      insertTrackAtTop?: boolean
     }
+
+type TimelineItemCommitOptions = {
+  insertTrackAtTop?: boolean
+}
+
+type ExportUiState = {
+  progress: number
+  message: string
+  url?: string
+  extension?: ExportFormat
+  controller?: AbortController
+  cleanup?: () => Promise<void>
+}
+
+type PendingReconnect = {
+  assetIds: string[]
+  assetName: string
+  file: File
+  fileHandle?: FileSystemFileHandle
+  metadata: MediaMetadata
+  warnings: string[]
+}
+
+type LocalFileDebugRestore = {
+  restoredCount: number
+  permissionNeededCount: number
+  unavailableCount: number
+  diagnostics: FileRestoreDiagnostic[]
+}
 
 function applyTimelineItemPreviewPatch(
   project: Project | null,
@@ -230,27 +273,43 @@ function applyTimelineItemPreviewPatch(
     let matched = false
     const clips = project.clips.map((clip) => {
       if (clip.id !== preview.id) {
-        return clip
+        return preview.insertTrackAtTop
+          ? { ...clip, trackIndex: getTrackIndex(clip) + 1 }
+          : clip
       }
 
       matched = true
       return { ...clip, ...preview.patch }
     })
+    const musicTracks = preview.insertTrackAtTop
+      ? project.musicTracks.map((track) => ({
+          ...track,
+          trackIndex: getTrackIndex(track) + 1,
+        }))
+      : project.musicTracks
 
-    return matched ? { ...project, clips } : project
+    return matched ? { ...project, clips, musicTracks } : project
   }
 
   let matched = false
   const musicTracks = project.musicTracks.map((track) => {
     if (track.id !== preview.id) {
-      return track
+      return preview.insertTrackAtTop
+        ? { ...track, trackIndex: getTrackIndex(track) + 1 }
+        : track
     }
 
     matched = true
     return { ...track, ...preview.patch }
   })
+  const clips = preview.insertTrackAtTop
+    ? project.clips.map((clip) => ({
+        ...clip,
+        trackIndex: getTrackIndex(clip) + 1,
+      }))
+    : project.clips
 
-  return matched ? { ...project, musicTracks } : project
+  return matched ? { ...project, clips, musicTracks } : project
 }
 
 export function EditorClient() {
@@ -267,14 +326,13 @@ export function EditorClient() {
   const [timelineItemPreview, setTimelineItemPreview] =
     useState<TimelineItemPreviewPatch | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [status, setStatus] = useState("Loading project")
-  const [exportState, setExportState] = useState<{
-    progress: number
-    message: string
-    url?: string
-    extension?: ExportFormat
-    controller?: AbortController
-  }>({ progress: 0, message: "Idle" })
+  const [exportState, setExportState] = useState<ExportUiState>({
+    progress: 0,
+    message: "Idle",
+  })
+  const exportStateRef = useRef(exportState)
+  const [pendingReconnect, setPendingReconnect] =
+    useState<PendingReconnect | null>(null)
   const [inspectorWidth, setInspectorWidth] = useState(() =>
     getStoredEditorLayoutValue(
       "inspectorWidth",
@@ -334,7 +392,6 @@ export function EditorClient() {
         updatedAt: Date.now(),
       })
       selectEditorSelection({ type: "project" })
-      setStatus("Clip deleted locally")
       return
     }
 
@@ -351,7 +408,6 @@ export function EditorClient() {
         updatedAt: Date.now(),
       })
       selectEditorSelection({ type: "project" })
-      setStatus("Timeline item deleted locally")
     }
   }, [project, selectEditorSelection, selection])
 
@@ -521,8 +577,7 @@ export function EditorClient() {
         return
       }
 
-      setProject(loadedProject)
-      setStatus("Project metadata loaded locally")
+      publishLocalFileDebug("project-loaded", loadedProject)
       requestPersistentStorage().catch(() => false)
 
       restoreSavedFileHandles(loadedProject, false)
@@ -538,29 +593,22 @@ export function EditorClient() {
       )
 
       if (!active) {
-        Object.values(result.runtimeAssets).forEach((asset) =>
-          URL.revokeObjectURL(asset.objectUrl)
-        )
+        if (result.runtimeAssets) {
+          Object.values(result.runtimeAssets).forEach((asset) =>
+            URL.revokeObjectURL(asset.objectUrl)
+          )
+        }
         return
       }
 
-      if (result.restoredCount > 0) {
-        setRuntimeAssets((current) =>
-          mergeRuntimeAssets(current, result.runtimeAssets)
-        )
-      }
+      publishLocalFileDebug("restore-complete", targetProject, result)
+
+      setProject(targetProject)
 
       if (result.restoredCount > 0) {
-        setStatus(
-          `Restored ${result.restoredCount} saved local file handle${
-            result.restoredCount === 1 ? "" : "s"
-          }`
-        )
-      } else if (result.permissionNeededCount > 0) {
-        setStatus("Saved file handles need permission before preview/export")
-      } else if (result.unavailableCount > 0) {
-        setStatus("Some files need manual reconnect in this browser")
+        setRuntimeAssets(result.runtimeAssets)
       }
+
     }
 
     return () => {
@@ -573,10 +621,15 @@ export function EditorClient() {
   }, [runtimeAssets])
 
   useEffect(() => {
+    exportStateRef.current = exportState
+  }, [exportState])
+
+  useEffect(() => {
     return () => {
       Object.values(runtimeAssetsRef.current).forEach((asset) =>
         URL.revokeObjectURL(asset.objectUrl)
       )
+      cleanupExportResult(exportStateRef.current)
     }
   }, [])
 
@@ -586,11 +639,7 @@ export function EditorClient() {
     }
 
     const timeout = window.setTimeout(() => {
-      saveProject(project).catch((reason) => {
-        setStatus(
-          reason instanceof Error ? reason.message : "Could not save project"
-        )
-      })
+      saveProject(project).catch(() => undefined)
     }, 350)
 
     return () => window.clearTimeout(timeout)
@@ -643,6 +692,8 @@ export function EditorClient() {
       }
 
       const metadata = await readMediaMetadata(file, type)
+      const fileHandle = handles[file.name]
+      const fileBlob = getPersistedFileBlob(file)
       const asset: SourceAsset = {
         id: crypto.randomUUID(),
         name: file.name,
@@ -652,8 +703,8 @@ export function EditorClient() {
         width: metadata.width,
         height: metadata.height,
         createdAt: Date.now(),
-        fileHandle: handles[file.name],
-        fileBlob: file,
+        fileHandle,
+        fileBlob,
       }
       const sourceEndSeconds = metadata.durationSeconds ?? 5
 
@@ -724,7 +775,6 @@ export function EditorClient() {
     }
 
     if (importedAssets.length === 0) {
-      setStatus("No supported local media files were selected")
       return
     }
 
@@ -742,25 +792,11 @@ export function EditorClient() {
     setProject(nextProject)
     await saveProject(nextProject)
     const savedProject = await getProject(nextProject.id)
-    const savedHandleCount =
-      savedProject?.sourceAssets.filter((asset) => asset.fileHandle?.getFile)
-        .length ?? 0
-    setStatus(
-      `Imported ${importedAssets.length} local file${
-        importedAssets.length === 1 ? "" : "s"
-      }${
-        importedAssets.every((asset) => asset.fileHandle)
-          ? ` with persistent handles (${savedHandleCount} saved)`
-          : ". Files were stored in this browser for reload restore"
-      }`
-    )
+    publishLocalFileDebug("import-complete", savedProject ?? nextProject)
   }
 
   async function importWithPicker() {
     if (!("showOpenFilePicker" in window)) {
-      setStatus(
-        "This browser import path cannot persist file access after refresh"
-      )
       document.getElementById("media-import")?.click()
       return
     }
@@ -922,46 +958,88 @@ export function EditorClient() {
     importFiles(files)
   }
 
-  function updateClip(id: string, patch: Partial<TimelineClip>) {
+  function updateClip(
+    id: string,
+    patch: Partial<TimelineClip>,
+    options: TimelineItemCommitOptions = {}
+  ) {
     if (!project) {
       return
     }
 
-    const timelineItems = [...project.clips, ...project.musicTracks]
+    const clips = options.insertTrackAtTop
+      ? project.clips.map((clip) =>
+          clip.id === id
+            ? clip
+            : { ...clip, trackIndex: getTrackIndex(clip) + 1 }
+        )
+      : project.clips
+    const musicTracks = options.insertTrackAtTop
+      ? project.musicTracks.map((track) => ({
+          ...track,
+          trackIndex: getTrackIndex(track) + 1,
+        }))
+      : project.musicTracks
+    const timelineItems = [...clips, ...musicTracks]
+    const commitPatch = options.insertTrackAtTop
+      ? { ...patch, trackIndex: 0 }
+      : patch
 
     setProject({
       ...project,
-      clips: project.clips.map((clip) =>
+      clips: clips.map((clip) =>
         clip.id === id
           ? constrainTimelineItemPatch(
               clip,
               timelineItems,
-              patch,
+              commitPatch,
               snapEnabled ? timelineItems : null,
               getSnapThresholdSeconds(timelineZoom),
               getTimelineItemSourceDuration(clip, project.sourceAssets)
             )
           : clip
       ),
+      musicTracks,
       updatedAt: Date.now(),
     })
   }
 
-  function updateMusic(id: string, patch: Partial<MusicTrack>) {
+  function updateMusic(
+    id: string,
+    patch: Partial<MusicTrack>,
+    options: TimelineItemCommitOptions = {}
+  ) {
     if (!project) {
       return
     }
 
-    const timelineItems = [...project.clips, ...project.musicTracks]
+    const clips = options.insertTrackAtTop
+      ? project.clips.map((clip) => ({
+          ...clip,
+          trackIndex: getTrackIndex(clip) + 1,
+        }))
+      : project.clips
+    const musicTracks = options.insertTrackAtTop
+      ? project.musicTracks.map((track) =>
+          track.id === id
+            ? track
+            : { ...track, trackIndex: getTrackIndex(track) + 1 }
+        )
+      : project.musicTracks
+    const timelineItems = [...clips, ...musicTracks]
+    const commitPatch = options.insertTrackAtTop
+      ? { ...patch, trackIndex: 0 }
+      : patch
 
     setProject({
       ...project,
-      musicTracks: project.musicTracks.map((track) =>
+      clips,
+      musicTracks: musicTracks.map((track) =>
         track.id === id
           ? constrainTimelineItemPatch(
               track,
               timelineItems,
-              patch,
+              commitPatch,
               snapEnabled ? timelineItems : null,
               getSnapThresholdSeconds(timelineZoom),
               getTimelineItemSourceDuration(track, project.sourceAssets)
@@ -981,7 +1059,6 @@ export function EditorClient() {
     const localSplit = playheadSeconds - selectedClip.timelineStartSeconds
 
     if (localSplit <= 0.2 || localSplit >= clipDuration - 0.2) {
-      setStatus("Move the playhead inside the selected clip before splitting")
       return
     }
 
@@ -1003,7 +1080,6 @@ export function EditorClient() {
       updatedAt: Date.now(),
     })
     selectEditorSelection({ type: "clip", id: nextClip.id })
-    setStatus("Clip split locally")
   }
 
   async function reconnectAsset(
@@ -1024,8 +1100,52 @@ export function EditorClient() {
       return
     }
 
-    if (file.name !== asset.name) {
-      setStatus(`Expected ${asset.name}, got ${file.name}`)
+    const fileKind = getFileKind(file)
+
+    if (fileKind && fileKind !== asset.type) {
+      return
+    }
+
+    const metadata = await readMediaMetadata(file, asset.type)
+    const warnings = getReconnectWarnings(asset, file, metadata)
+
+    if (warnings.length > 0) {
+      setPendingReconnect({
+        assetIds,
+        assetName: asset.name,
+        file,
+        fileHandle,
+        metadata,
+        warnings,
+      })
+      return
+    }
+
+    await commitReconnectAsset({
+      assetIds,
+      assetName: asset.name,
+      file,
+      fileHandle,
+      metadata,
+      warnings,
+    })
+  }
+
+  async function commitReconnectAsset({
+    assetIds,
+    file,
+    fileHandle,
+    metadata,
+  }: PendingReconnect) {
+    if (!project) {
+      return
+    }
+
+    const assetIdSet = new Set(assetIds)
+    const assets = project.sourceAssets.filter((item) => assetIdSet.has(item.id))
+    const asset = assets[0]
+
+    if (!asset) {
       return
     }
 
@@ -1039,8 +1159,13 @@ export function EditorClient() {
         assetIdSet.has(item.id)
           ? {
               ...item,
+              durationSeconds: metadata.durationSeconds ?? item.durationSeconds,
               fileHandle: fileHandle ?? item.fileHandle,
-              fileBlob: file,
+              fileBlob: getPersistedFileBlob(file),
+              height: metadata.height ?? item.height,
+              name: file.name,
+              sizeBytes: file.size,
+              width: metadata.width ?? item.width,
             }
           : item
       ),
@@ -1050,49 +1175,7 @@ export function EditorClient() {
     setProject(nextProject)
     await saveProject(nextProject)
     const savedProject = await getProject(nextProject.id)
-    const savedAsset = savedProject?.sourceAssets.find((item) =>
-      assetIdSet.has(item.id)
-    )
-    const suffix = assets.length > 1 ? ` (${assets.length} references)` : ""
-    setStatus(
-      `Reconnected ${asset.name}${suffix}${
-        fileHandle
-          ? savedAsset?.fileHandle?.getFile
-            ? " with persistent access saved"
-            : " but the handle was not stored by this browser"
-          : " for this session"
-      }`
-    )
-  }
-
-  async function restoreSavedAccess() {
-    if (!project) {
-      return
-    }
-
-    const result = await restoreProjectFileHandles(project, true)
-
-    if (result.restoredCount > 0) {
-      setRuntimeAssets((current) =>
-        mergeRuntimeAssets(current, result.runtimeAssets)
-      )
-    } else {
-      Object.values(result.runtimeAssets).forEach((asset) =>
-        URL.revokeObjectURL(asset.objectUrl)
-      )
-    }
-
-    if (result.restoredCount > 0) {
-      setStatus(
-        `Restored ${result.restoredCount} local file${
-          result.restoredCount === 1 ? "" : "s"
-        }`
-      )
-    } else if (result.permissionNeededCount > 0) {
-      setStatus("File access was not granted")
-    } else {
-      setStatus("No saved file handles could be restored")
-    }
+    publishLocalFileDebug("reconnect-complete", savedProject ?? nextProject)
   }
 
   async function runExport() {
@@ -1100,9 +1183,11 @@ export function EditorClient() {
       return
     }
 
-    if (exportState.url) {
-      URL.revokeObjectURL(exportState.url)
+    if (exportStateRef.current.controller) {
+      return
     }
+
+    cleanupExportResult(exportStateRef.current)
 
     const controller = new AbortController()
     setExportState({
@@ -1123,6 +1208,7 @@ export function EditorClient() {
       setExportState({
         progress: 1,
         message: `${result.extension.toUpperCase()} export ready`,
+        cleanup: result.cleanup,
         extension: result.extension,
         url,
       })
@@ -1150,7 +1236,7 @@ export function EditorClient() {
   return (
     <main className="flex h-svh min-h-[720px] w-full max-w-[100vw] min-w-0 flex-col overflow-hidden bg-background text-foreground select-none">
       <header className="flex h-11 min-w-0 shrink-0 items-center justify-between px-3">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1162,7 +1248,7 @@ export function EditorClient() {
           </Button>
           <div className="min-w-0">
             <Input
-              className="h-7 border-transparent px-1 text-sm font-medium shadow-none select-text"
+              className="h-7 w-auto min-w-[50px] max-w-[38vw] border-transparent bg-transparent px-2.5 text-sm font-medium shadow-none select-text [field-sizing:content] hover:bg-input focus:bg-input focus-visible:bg-input"
               value={project.name}
               onChange={(event) =>
                 setProject({
@@ -1184,6 +1270,7 @@ export function EditorClient() {
             multiple
             onChange={onFileInput}
           />
+          <EditorSettingsMenu />
           <Button variant="outline" size="sm" onClick={importWithPicker}>
             <Upload data-icon="inline-start" />
             Import
@@ -1201,7 +1288,6 @@ export function EditorClient() {
               })
             }
           />
-          <ThemeToggle size="icon-sm" />
         </div>
       </header>
 
@@ -1229,7 +1315,6 @@ export function EditorClient() {
             selectedClip={selectedClip}
             selectedMusic={selectedMusic}
             missingAssets={missingAssets}
-            status={status}
             onClipChange={updateClip}
             onMusicChange={updateMusic}
             onProjectChange={(patch) =>
@@ -1240,7 +1325,6 @@ export function EditorClient() {
               })
             }
             onReconnect={reconnectAsset}
-            onRestoreSavedAccess={restoreSavedAccess}
           />
           <div className="grid min-h-0 place-items-center">
             <ResizeGapHandle
@@ -1262,6 +1346,7 @@ export function EditorClient() {
             isPlaying={isPlaying}
             onPlayChange={setIsPlaying}
             onPlayheadChange={setPlayheadSeconds}
+            onOpenFileList={() => setInspectorView("files")}
           />
         </div>
 
@@ -1297,20 +1382,100 @@ export function EditorClient() {
           canDelete={selection.type === "clip" || selection.type === "music"}
           snapEnabled={snapEnabled}
           onSnapEnabledChange={setSnapEnabled}
-          onClipPreviewChange={(id, patch) =>
+          onClipPreviewChange={(id, preview) =>
             setTimelineItemPreview(
-              patch ? { type: "clip", id, patch } : null
+              preview
+                ? {
+                    type: "clip",
+                    id,
+                    patch: preview.patch as Partial<TimelineClip>,
+                    insertTrackAtTop: preview.insertTrackAtTop,
+                  }
+                : null
             )
           }
-          onMusicPreviewChange={(id, patch) =>
+          onMusicPreviewChange={(id, preview) =>
             setTimelineItemPreview(
-              patch ? { type: "music", id, patch } : null
+              preview
+                ? {
+                    type: "music",
+                    id,
+                    patch: preview.patch as Partial<MusicTrack>,
+                    insertTrackAtTop: preview.insertTrackAtTop,
+                  }
+                : null
             )
           }
           onDropFiles={importTimelineDrop}
         />
       </section>
+      <ReconnectWarningDialog
+        pendingReconnect={pendingReconnect}
+        onCancel={() => setPendingReconnect(null)}
+        onConfirm={() => {
+          const reconnect = pendingReconnect
+
+          if (!reconnect) {
+            return
+          }
+
+          setPendingReconnect(null)
+          void commitReconnectAsset(reconnect)
+        }}
+      />
     </main>
+  )
+}
+
+function EditorSettingsMenu() {
+  const { theme, setTheme } = useTheme()
+  const themeOptions = [
+    { label: "System", value: "system", icon: Monitor },
+    { label: "Light", value: "light", icon: Sun },
+    { label: "Dark", value: "dark", icon: Moon },
+  ]
+  const selectedTheme = theme ?? "system"
+  const selectedIndex = Math.max(
+    0,
+    themeOptions.findIndex((option) => option.value === selectedTheme)
+  )
+
+  return (
+    <DropdownMenu>
+      <Tooltip content="Editor settings">
+        <span className="inline-flex">
+          <DropdownTrigger
+            render={
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="Editor settings"
+              >
+                <Dots />
+              </Button>
+            }
+          />
+        </span>
+      </Tooltip>
+      <DropdownContent
+        align="end"
+        checkedIndex={selectedIndex}
+        className="z-[5010] w-48"
+      >
+        <DropdownLabel>Theme</DropdownLabel>
+        {themeOptions.map((option, index) => (
+          <MenuItem
+            key={option.value}
+            index={index}
+            icon={option.icon}
+            label={option.label}
+            checked={selectedTheme === option.value}
+            onSelect={() => setTheme(option.value)}
+          />
+        ))}
+      </DropdownContent>
+    </DropdownMenu>
   )
 }
 
@@ -1322,12 +1487,10 @@ function InspectorPanel({
   selectedClip,
   selectedMusic,
   missingAssets,
-  status,
   onClipChange,
   onMusicChange,
   onProjectChange,
   onReconnect,
-  onRestoreSavedAccess,
 }: {
   view: InspectorView
   onViewChange: (view: InspectorView) => void
@@ -1336,7 +1499,6 @@ function InspectorPanel({
   selectedClip: TimelineClip | null
   selectedMusic: MusicTrack | null
   missingAssets: SourceAsset[]
-  status: string
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
   onProjectChange: (patch: Partial<Project["exportSettings"]>) => void
@@ -1345,10 +1507,22 @@ function InspectorPanel({
     file: File,
     fileHandle?: FileSystemFileHandle
   ) => void
-  onRestoreSavedAccess: () => void
 }) {
-  const missingSavedHandles = missingAssets.filter((asset) => asset.fileHandle)
-  const missingAssetIds = new Set(missingAssets.map((asset) => asset.id))
+  const timelineAssetIds = new Set(
+    [...project.clips, ...project.musicTracks].map((item) => item.sourceAssetId)
+  )
+  const timelineAssets = project.sourceAssets.filter((asset) =>
+    timelineAssetIds.has(asset.id)
+  )
+  const missingTimelineAssets = missingAssets.filter((asset) =>
+    timelineAssetIds.has(asset.id)
+  )
+  const missingAssetIds = new Set(
+    missingTimelineAssets.map((asset) => asset.id)
+  )
+  const selectedAssetMissing = selectedAsset
+    ? missingAssetIds.has(selectedAsset.id)
+    : false
   const heading =
     view === "files"
       ? "Files"
@@ -1360,14 +1534,16 @@ function InspectorPanel({
       ? "Imported media files stay local and can be reconnected here."
       : view === "selection"
         ? selectedAsset
-          ? `${selectedAsset.type} · ${formatBytes(selectedAsset.sizeBytes)}`
+          ? null
           : "Timeline item properties."
         : "Edit decisions are stored locally. Media files are referenced from disk."
-  const fileList =
-    project.sourceAssets.length > 0 ? project.sourceAssets : missingAssets
-  const fileGroups = groupSourceAssets(fileList)
-  const canRestoreSavedAccess = missingSavedHandles.length > 0
-
+  const fileGroups = groupSourceAssets([
+    ...timelineAssets,
+    ...missingTimelineAssets.filter(
+      (asset) =>
+        !timelineAssets.some((timelineAsset) => timelineAsset.id === asset.id)
+    ),
+  ])
   const body =
     view === "selection" && selectedClip ? (
       <div className="space-y-4">
@@ -1466,20 +1642,9 @@ function InspectorPanel({
       </p>
     ) : view === "files" ? (
       <div className="space-y-4">
-        {canRestoreSavedAccess ? (
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={onRestoreSavedAccess}
-          >
-            <FolderOpen data-icon="inline-start" />
-            Restore saved access
-          </Button>
-        ) : null}
-
         {fileGroups.length === 0 ? (
           <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
-            Import video or audio files to start building a timeline.
+            Add media to the timeline to see referenced files here.
           </p>
         ) : (
           <div className="space-y-2">
@@ -1500,9 +1665,6 @@ function InspectorPanel({
           </div>
         )}
 
-        <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
-          {status}
-        </p>
       </div>
     ) : (
       <ProjectSettingsFields
@@ -1513,16 +1675,40 @@ function InspectorPanel({
 
   return (
     <aside className={`flex min-h-0 flex-col overflow-visible ${CARD_CLASS}`}>
-      <InspectorViewNav view={view} onViewChange={onViewChange} />
+      <InspectorViewNav
+        view={view}
+        missingFileCount={missingTimelineAssets.length}
+        onViewChange={onViewChange}
+      />
       <div className="min-h-0 overflow-y-auto p-3">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="truncate text-base leading-5 font-semibold">
               {heading}
             </h2>
-            <p className="text-xs leading-5 text-pretty text-muted-foreground">
-              {description}
-            </p>
+            {view === "selection" && selectedAsset ? (
+              <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
+                <span className="truncate">
+                  {selectedAsset.type} · {formatBytes(selectedAsset.sizeBytes)}
+                </span>
+                {selectedAssetMissing ? (
+                  <Tooltip content="Missing file. Open file list.">
+                    <button
+                      type="button"
+                      className="inline-flex size-4 shrink-0 items-center justify-center text-destructive"
+                      onClick={() => onViewChange("files")}
+                      aria-label="Open file list for missing file"
+                    >
+                      <CircleExclamation className="size-3.5" />
+                    </button>
+                  </Tooltip>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-xs leading-5 text-pretty text-muted-foreground">
+                {description}
+              </p>
+            )}
           </div>
 
           {body}
@@ -1534,19 +1720,40 @@ function InspectorPanel({
 
 function InspectorViewNav({
   view,
+  missingFileCount,
   onViewChange,
 }: {
   view: InspectorView
+  missingFileCount: number
   onViewChange: (view: InspectorView) => void
 }) {
+  const FilesIcon: ComponentType<{
+    size?: number
+    strokeWidth?: number
+    className?: string
+  }> = ({ size = 14, strokeWidth = 1.5, className }) => (
+    <span className={`relative inline-flex size-3.5 ${className ?? ""}`}>
+      <FolderOpen className="size-full" size={size} strokeWidth={strokeWidth} />
+      {missingFileCount > 0 ? (
+        <span
+          className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-destructive"
+          aria-hidden="true"
+        />
+      ) : null}
+    </span>
+  )
   const tabs: Array<{
     view: InspectorView
     label: string
-    icon: typeof Info
+    icon: ComponentType<{
+      size?: number
+      strokeWidth?: number
+      className?: string
+    }>
   }> = [
     { view: "project", label: "Project details", icon: Info },
     { view: "selection", label: "Selected item", icon: MousePointer2 },
-    { view: "files", label: "Files", icon: FolderOpen },
+    { view: "files", label: "Files", icon: FilesIcon },
   ]
   const selectedIndex = Math.max(
     0,
@@ -1676,19 +1883,16 @@ function ExportDialog({
   onFormatChange,
 }: {
   project: Project
-  exportState: {
-    progress: number
-    message: string
-    url?: string
-    extension?: ExportFormat
-    controller?: AbortController
-  }
+  exportState: ExportUiState
   onExport: () => void
   onCancelExport: () => void
   onFormatChange: (format: ExportFormat) => void
 }) {
   const formatLabel = getExportFormatLabel(project.exportSettings.format)
   const downloadExtension = exportState.extension ?? project.exportSettings.format
+  const isExporting = Boolean(exportState.controller)
+  const [open, setOpen] = useState(false)
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false)
   const formatOptions: Array<{ label: string; value: ExportFormat }> = [
     { label: "WebM", value: "webm" },
     { label: "MP4", value: "mp4" },
@@ -1699,8 +1903,34 @@ function ExportDialog({
       (option) => option.value === project.exportSettings.format
     )
   )
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setCancelConfirmOpen(false)
+      setOpen(true)
+      return
+    }
+
+    if (isExporting) {
+      setCancelConfirmOpen(true)
+      return
+    }
+
+    setOpen(false)
+  }
+
+  function confirmCancelExport() {
+    onCancelExport()
+    setCancelConfirmOpen(false)
+    setOpen(false)
+  }
+
   return (
-    <Dialog>
+    <Dialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      disablePointerDismissal={isExporting}
+    >
       <DialogTrigger
         render={
           <Button type="button" size="sm">
@@ -1710,83 +1940,192 @@ function ExportDialog({
         }
       />
       <DialogContent>
+        <div
+          className={[
+            "grid gap-4 transition-opacity duration-150",
+            cancelConfirmOpen && isExporting ? "opacity-50" : "opacity-100",
+          ].join(" ")}
+        >
+          <div className="space-y-1">
+            <DialogTitle>Export</DialogTitle>
+            <DialogDescription>
+              Render this project locally using browser-native export. Files
+              never leave this device.
+            </DialogDescription>
+          </div>
+
+          <div className="space-y-1 text-sm">
+            <Label className="text-xs font-normal text-muted-foreground">
+              Format
+            </Label>
+            <DropdownMenu disabled={isExporting}>
+              <DropdownTrigger
+                disabled={isExporting}
+                className="flex h-8 w-full items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              >
+                {formatLabel}
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              </DropdownTrigger>
+              <DropdownContent
+                checkedIndex={selectedFormatIndex}
+                className="z-[5010]"
+              >
+                {formatOptions.map((option, index) => (
+                  <MenuItem
+                    key={option.value}
+                    index={index}
+                    label={option.label}
+                    checked={project.exportSettings.format === option.value}
+                    disabled={isExporting}
+                    onSelect={() => {
+                      if (!isExporting) {
+                        onFormatChange(option.value)
+                      }
+                    }}
+                  />
+                ))}
+              </DropdownContent>
+            </DropdownMenu>
+          </div>
+
+          <div className="grid gap-3 rounded-lg bg-muted/55 p-3 text-sm">
+            <Metric
+              label="Size"
+              value={`${project.exportSettings.width}x${project.exportSettings.height}`}
+            />
+            <Metric
+              label="Frame rate"
+              value={`${project.exportSettings.fps} fps`}
+            />
+          </div>
+
+          <Progress value={Math.round(exportState.progress * 100)}>
+            <ProgressLabel>{exportState.message}</ProgressLabel>
+            <span className="ml-auto text-sm text-muted-foreground tabular-nums">
+              {Math.round(exportState.progress * 100)}%
+            </span>
+          </Progress>
+
+          <div className="flex flex-wrap justify-end gap-2">
+            {exportState.controller ? (
+              <Button type="button" variant="outline" onClick={onCancelExport}>
+                Cancel
+              </Button>
+            ) : null}
+            {exportState.url ? (
+              <Button
+                nativeButton={false}
+                render={
+                  <a
+                    href={exportState.url}
+                    download={`${project.name || "export"}.${downloadExtension}`}
+                  />
+                }
+              >
+                <Download data-icon="inline-start" />
+                Download
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={() => {
+                  setCancelConfirmOpen(false)
+                  onExport()
+                }}
+                disabled={isExporting}
+              >
+                <Download data-icon="inline-start" />
+                Export {formatLabel}
+              </Button>
+            )}
+          </div>
+        </div>
+        <Dialog
+          open={cancelConfirmOpen && isExporting}
+          onOpenChange={setCancelConfirmOpen}
+        >
+          <DialogContent>
+            <div className="space-y-1">
+              <DialogTitle>Cancel Export?</DialogTitle>
+              <DialogDescription>
+                The current export is still running. Closing this dialog will
+                cancel the export.
+              </DialogDescription>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCancelConfirmOpen(false)}
+              >
+                Keep Exporting
+              </Button>
+              <Button type="button" onClick={confirmCancelExport}>
+                Cancel Export
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ReconnectWarningDialog({
+  pendingReconnect,
+  onCancel,
+  onConfirm,
+}: {
+  pendingReconnect: PendingReconnect | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog
+      open={Boolean(pendingReconnect)}
+      onOpenChange={(open) => {
+        if (!open) {
+          onCancel()
+        }
+      }}
+    >
+      <DialogContent>
         <div className="space-y-1">
-          <DialogTitle>Export</DialogTitle>
+          <DialogTitle>Heads up</DialogTitle>
           <DialogDescription>
-            Render this project locally using browser-native export. Files never
-            leave this device.
+            The file you are reconnecting looks different from the original
+            media reference.
           </DialogDescription>
         </div>
 
-        <div className="space-y-1 text-sm">
-          <Label className="text-xs font-normal text-muted-foreground">
-            Format
-          </Label>
-          <DropdownMenu>
-            <DropdownTrigger className="flex h-8 w-full items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
-              {formatLabel}
-              <ChevronDown className="size-3.5 text-muted-foreground" />
-            </DropdownTrigger>
-            <DropdownContent
-              checkedIndex={selectedFormatIndex}
-              className="z-[5010]"
-            >
-              {formatOptions.map((option, index) => (
-                <MenuItem
-                  key={option.value}
-                  index={index}
-                  label={option.label}
-                  checked={project.exportSettings.format === option.value}
-                  onSelect={() => onFormatChange(option.value)}
-                />
+        {pendingReconnect ? (
+          <div className="space-y-3 rounded-lg bg-muted/55 p-3 text-sm">
+            <div className="space-y-0.5">
+              <p className="font-medium text-foreground">
+                {pendingReconnect.assetName}
+              </p>
+              <p className="text-muted-foreground">
+                Selected: {pendingReconnect.file.name}
+              </p>
+            </div>
+            <ul className="space-y-1 text-muted-foreground">
+              {pendingReconnect.warnings.map((warning) => (
+                <li key={warning} className="flex gap-2">
+                  <CircleExclamation className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+                  <span>{warning}</span>
+                </li>
               ))}
-            </DropdownContent>
-          </DropdownMenu>
-        </div>
-
-        <div className="grid gap-3 rounded-lg bg-muted/55 p-3 text-sm">
-          <Metric
-            label="Size"
-            value={`${project.exportSettings.width}x${project.exportSettings.height}`}
-          />
-          <Metric
-            label="Frame rate"
-            value={`${project.exportSettings.fps} fps`}
-          />
-        </div>
-
-        <Progress value={Math.round(exportState.progress * 100)}>
-          <ProgressLabel>{exportState.message}</ProgressLabel>
-          <span className="ml-auto text-sm text-muted-foreground tabular-nums">
-            {Math.round(exportState.progress * 100)}%
-          </span>
-        </Progress>
+            </ul>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap justify-end gap-2">
-          {exportState.controller ? (
-            <Button type="button" variant="outline" onClick={onCancelExport}>
-              Cancel
-            </Button>
-          ) : null}
-          {exportState.url ? (
-            <Button
-              nativeButton={false}
-              render={
-                <a
-                  href={exportState.url}
-                  download={`${project.name || "export"}.${downloadExtension}`}
-                />
-              }
-            >
-              <Download data-icon="inline-start" />
-              Download
-            </Button>
-          ) : (
-            <Button type="button" onClick={onExport}>
-              <Download data-icon="inline-start" />
-              Export {formatLabel}
-            </Button>
-          )}
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={onConfirm}>
+            Reconnect Anyway
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -1809,17 +2148,13 @@ function ReconnectButton({
   const inputRef = useRef<HTMLInputElement>(null)
   const asset = group.primaryAsset
   const assetIds = group.assets.map((item) => item.id)
-  const storageLabel = group.assets.some((item) => item.fileHandle)
-    ? "persistent handle saved"
-    : group.assets.some((item) => item.fileBlob)
-      ? "stored in browser"
-      : "temporary file only"
   const connectionStatus =
     connectedCount === group.assets.length
       ? "connected"
       : connectedCount > 0
         ? `${group.assets.length - connectedCount} missing`
         : "missing"
+  const hasMissingReferences = connectedCount < group.assets.length
   const referenceLabel =
     group.assets.length > 1 ? `${group.assets.length} references · ` : ""
 
@@ -1843,7 +2178,7 @@ function ReconnectButton({
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
           {formatBytes(asset.sizeBytes)} · {referenceLabel}
-          {storageLabel} · {connectionStatus}
+          {connectionStatus}
         </p>
       </div>
       <input
@@ -1860,20 +2195,39 @@ function ReconnectButton({
           }
         }}
       />
-      <Button
-        size="icon-sm"
-        variant="outline"
-        onClick={() => {
-          if ("showOpenFilePicker" in window) {
-            reconnectWithPersistentPicker()
-          } else {
-            inputRef.current?.click()
-          }
-        }}
-        aria-label={`Link local file for ${asset.name}`}
+      {hasMissingReferences ? (
+        <Tooltip content="Missing local file">
+          <span
+            className="inline-flex size-7 items-center justify-center text-destructive"
+            aria-label="Missing local file"
+          >
+            <CircleExclamation className="size-4" />
+          </span>
+        </Tooltip>
+      ) : null}
+      <Tooltip
+        content={
+          hasMissingReferences ? "Reconnect local file" : "File is connected"
+        }
       >
-        <LinkIcon />
-      </Button>
+        <span className="inline-flex">
+          <Button
+            size="icon-sm"
+            variant="outline"
+            disabled={!hasMissingReferences}
+            onClick={() => {
+              if ("showOpenFilePicker" in window) {
+                reconnectWithPersistentPicker()
+              } else {
+                inputRef.current?.click()
+              }
+            }}
+            aria-label={`Reconnect local file for ${asset.name}`}
+          >
+            <LinkIcon />
+          </Button>
+        </span>
+      </Tooltip>
     </div>
   )
 }
@@ -1923,6 +2277,7 @@ function PreviewStage({
   isPlaying,
   onPlayChange,
   onPlayheadChange,
+  onOpenFileList,
 }: {
   project: Project
   runtimeAssets: RuntimeAssetMap
@@ -1930,6 +2285,7 @@ function PreviewStage({
   isPlaying: boolean
   onPlayChange: (isPlaying: boolean) => void
   onPlayheadChange: (seconds: number) => void
+  onOpenFileList: () => void
 }) {
   const playheadRef = useRef(playheadSeconds)
   const previewAudioContextRef = useRef<AudioContext | null>(null)
@@ -2145,7 +2501,16 @@ function PreviewStage({
               )
 
               if (!runtimeAsset) {
-                return null
+                return activeClipIds.has(clip.id) ? (
+                  <PreviewMissingVideoLayer
+                    key={clip.id}
+                    clip={clip}
+                    asset={asset}
+                    frameWidth={project.exportSettings.width}
+                    frameHeight={project.exportSettings.height}
+                    onOpenFileList={onOpenFileList}
+                  />
+                ) : null
               }
 
               return (
@@ -2154,6 +2519,7 @@ function PreviewStage({
                   clip={clip}
                   asset={asset}
                   frameWidth={project.exportSettings.width}
+                  frameHeight={project.exportSettings.height}
                   runtimeAsset={runtimeAsset}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
@@ -2164,7 +2530,7 @@ function PreviewStage({
                 />
               )
             })}
-            {hasActiveVideo ? null : (
+            {hasActiveVideo || activeClips.length > 0 ? null : (
               <div className="absolute inset-0 grid place-items-center bg-background text-center text-sm text-muted-foreground">
                 <div className="space-y-2">
                   <Film className="mx-auto size-10" />
@@ -2173,6 +2539,19 @@ function PreviewStage({
                       ? "No video at the playhead."
                       : "Import or reconnect local media to preview."}
                   </p>
+                  {!hasPlayableMedia ? (
+                    <div className="pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={onOpenFileList}
+                      >
+                        <FolderOpen data-icon="inline-start" />
+                        Open File List
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -2227,6 +2606,7 @@ function PreviewVideoLayer({
   clip,
   asset,
   frameWidth,
+  frameHeight,
   runtimeAsset,
   playheadSeconds,
   isPlaying,
@@ -2238,6 +2618,7 @@ function PreviewVideoLayer({
   clip: TimelineClip
   asset?: SourceAsset
   frameWidth: number
+  frameHeight: number
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
@@ -2258,15 +2639,16 @@ function PreviewVideoLayer({
     volume: clip.volume,
   })
   const [isFrameReady, setIsFrameReady] = useState(false)
-  const aspectRatio =
-    asset?.width && asset.height ? asset.width / asset.height : 16 / 9
-  const sourceWidth = asset?.width && asset.height ? asset.width : frameWidth
-  const sourceHeight =
-    asset?.width && asset.height ? asset.height : frameWidth / aspectRatio
-  const widthPercent = (sourceWidth / frameWidth) * 100
-  const scale = getClipScale(clip)
-  const positionX = getClipPositionX(clip)
-  const positionY = getClipPositionY(clip)
+  const layerGeometry = getPreviewVideoLayerGeometry({
+    asset,
+    clip,
+    frameHeight,
+    frameWidth,
+  })
+  const layerStyle = getPreviewVideoLayerStyle(
+    layerGeometry,
+    getPreviewLayerZIndex(clip)
+  )
 
   useEffect(
     () => () => {
@@ -2371,6 +2753,12 @@ function PreviewVideoLayer({
         player.currentTime = targetTime
         await waitForMediaSeek(player)
       }
+
+      if (cancelled) {
+        return
+      }
+
+      await waitForMediaFrame(player)
 
       if (cancelled) {
         return
@@ -2495,41 +2883,97 @@ function PreviewVideoLayer({
 
   return (
     <>
-      <video
-        ref={videoRef}
+      <div
         className={[
-          "absolute block bg-card object-contain transition-opacity duration-75",
+          "absolute overflow-hidden transition-opacity duration-75",
           isActive && isFrameReady ? "opacity-100" : "opacity-0",
         ].join(" ")}
-        style={{
-          aspectRatio: `${sourceWidth} / ${sourceHeight}`,
-          height: "auto",
-          left: `${50 + positionX}%`,
-          top: `${50 + positionY}%`,
-          transform: `translate3d(-50%, -50%, 0) scale(${scale})`,
-          width: `${widthPercent}%`,
-          zIndex: getPreviewLayerZIndex(clip),
-        }}
-        muted
-        playsInline
-        preload="auto"
-        onError={() =>
-          onIssue(
-            "This browser could not decode one of the active video files."
-          )
-        }
-        onLoadedMetadata={(event) => {
-          const video = event.currentTarget
-          video.muted = true
-          onIssue(
-            video.videoWidth === 0 || video.videoHeight === 0
-              ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
-              : null
-          )
-        }}
-      />
+        style={layerStyle}
+      >
+        <video
+          ref={videoRef}
+          className="block size-full bg-card object-contain"
+          muted
+          playsInline
+          preload="auto"
+          onError={() =>
+            onIssue(
+              "This browser could not decode one of the active video files."
+            )
+          }
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget
+            video.muted = true
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              onIssue(null)
+            }
+          }}
+        />
+      </div>
       <audio ref={audioRef} preload="auto" />
     </>
+  )
+}
+
+function PreviewMissingVideoLayer({
+  clip,
+  asset,
+  frameWidth,
+  frameHeight,
+  onOpenFileList,
+}: {
+  clip: TimelineClip
+  asset?: SourceAsset
+  frameWidth: number
+  frameHeight: number
+  onOpenFileList: () => void
+}) {
+  const layerGeometry = getPreviewVideoLayerGeometry({
+    asset,
+    clip,
+    frameHeight,
+    frameWidth,
+  })
+  const layerStyle = getPreviewVideoLayerStyle(
+    layerGeometry,
+    getPreviewLayerZIndex(clip)
+  )
+  const inverseScale = 1 / Math.max(0.01, layerGeometry.scale)
+  const warningMaxSize = `${Math.min(1, Math.max(0.01, layerGeometry.scale)) * 100}%`
+  const fileName = asset?.name ?? "Unknown file"
+
+  return (
+    <div
+      className="absolute grid place-items-center overflow-hidden bg-background/70 text-center text-muted-foreground"
+      style={layerStyle}
+    >
+      <div
+        className="flex flex-col items-center gap-1.5 rounded-lg bg-background/95 px-3 py-2"
+        style={{
+          maxHeight: warningMaxSize,
+          maxWidth: `min(14rem, ${warningMaxSize})`,
+          transform: `scale(${inverseScale})`,
+        }}
+      >
+        <CircleExclamation className="size-5 shrink-0 text-destructive" />
+        <p className="max-w-full truncate text-xs">
+          Missing local file:{" "}
+          <span className="font-medium text-foreground">{fileName}</span>
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenFileList()
+          }}
+        >
+          <FolderOpen data-icon="inline-start" />
+          Open File List
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -2726,8 +3170,16 @@ function Timeline({
   viewportHeight: number
   onSelect: (selection: Selection) => void
   onPlayheadChange: (seconds: number) => void
-  onClipChange: (id: string, patch: Partial<TimelineClip>) => void
-  onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
+  onClipChange: (
+    id: string,
+    patch: Partial<TimelineClip>,
+    options?: TimelineItemCommitOptions
+  ) => void
+  onMusicChange: (
+    id: string,
+    patch: Partial<MusicTrack>,
+    options?: TimelineItemCommitOptions
+  ) => void
   onZoomChange: (zoom: number) => void
   onSplit: () => void
   canSplit: boolean
@@ -2735,8 +3187,14 @@ function Timeline({
   canDelete: boolean
   snapEnabled: boolean
   onSnapEnabledChange: (enabled: boolean) => void
-  onClipPreviewChange: (id: string, patch: Partial<TimelineClip> | null) => void
-  onMusicPreviewChange: (id: string, patch: Partial<MusicTrack> | null) => void
+  onClipPreviewChange: (
+    id: string,
+    preview: TimelineItemDragPreview | null
+  ) => void
+  onMusicPreviewChange: (
+    id: string,
+    preview: TimelineItemDragPreview | null
+  ) => void
   onDropFiles: (
     dropped: TimelineDroppedFile[],
     placement: TimelineDropPlacement
@@ -2749,7 +3207,11 @@ function Timeline({
   )
   const duration = Math.max(12, getProjectDuration(project) + 3)
   const width = Math.max(duration * zoom, 1200)
-  const trackCount = Math.max(4, getTrackCount(timelineItems))
+  const [topTrackInsertItemId, setTopTrackInsertItemId] = useState<
+    string | null
+  >(null)
+  const trackCount =
+    Math.max(4, getTrackCount(timelineItems)) + (topTrackInsertItemId ? 1 : 0)
   const timelineHeight =
     TIMELINE_TRACK_TOP + trackCount * (TRACK_HEIGHT + TRACK_GAP) + 12
   const timelineContentHeight = Math.max(timelineHeight, viewportHeight)
@@ -2765,6 +3227,14 @@ function Timeline({
   const durationRef = useRef(duration)
   const playheadSecondsRef = useRef(playheadSeconds)
   const isSeekingRef = useRef(false)
+  const dropMetadataCacheRef = useRef<Map<string, TimelineDropMetadataCache>>(
+    new Map()
+  )
+  const dropPreviewPointerRef = useRef<{
+    clientX: number
+    clientY: number
+    container: HTMLDivElement
+  } | null>(null)
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0)
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
@@ -3147,14 +3617,53 @@ function Timeline({
 
     event.preventDefault()
     event.stopPropagation()
+    const draggedDuration = getTimelineDraggedFileDuration(
+      event.dataTransfer,
+      dropMetadataCacheRef.current
+    )
+    dropPreviewPointerRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      container: event.currentTarget,
+    }
     setDropPreview(
       getTimelineDropPreview(
         event,
         zoom,
         duration,
-        TIMELINE_CONTENT_INSET_X
+        TIMELINE_CONTENT_INSET_X,
+        draggedDuration
       )
     )
+
+    if (draggedDuration !== undefined) {
+      return
+    }
+
+    const pendingDuration = loadTimelineDraggedFileDuration(
+      event.dataTransfer,
+      dropMetadataCacheRef.current
+    )
+
+    pendingDuration?.then((durationSeconds) => {
+      const pointer = dropPreviewPointerRef.current
+
+      if (durationSeconds === undefined || !pointer) {
+        return
+      }
+
+      setDropPreview(
+        getTimelineDropPreviewFromPoint({
+          clientX: pointer.clientX,
+          clientY: pointer.clientY,
+          container: pointer.container,
+          contentInsetX: TIMELINE_CONTENT_INSET_X,
+          duration,
+          draggedDurationSeconds: durationSeconds,
+          zoom,
+        })
+      )
+    })
   }
 
   async function dropFilesOnTimeline(event: DragEvent<HTMLDivElement>) {
@@ -3170,6 +3679,7 @@ function Timeline({
     const dropped = await getDroppedLocalFiles(event.dataTransfer)
 
     setDropPreview(null)
+    dropPreviewPointerRef.current = null
 
     if (dropped.length > 0) {
       onDropFiles(dropped, preview.placement)
@@ -3182,6 +3692,21 @@ function Timeline({
     (timelineViewportWidth > 0 ? timelineViewportWidth : width)
   const isTrimSnapPreview =
     snapPreview?.mode === "start" || snapPreview?.mode === "end"
+
+  function getRenderedTrackIndex(item: TimelineItemData) {
+    const trackIndex = getTrackIndex(item)
+
+    return topTrackInsertItemId && item.id !== topTrackInsertItemId
+      ? trackIndex + 1
+      : trackIndex
+  }
+
+  function updateTopTrackInsertPreview(
+    id: string,
+    preview: TimelineItemDragPreview | null
+  ) {
+    setTopTrackInsertItemId(preview?.insertTrackAtTop ? id : null)
+  }
 
   return (
     <section className={`min-h-0 max-w-full min-w-0 ${CARD_CLASS}`}>
@@ -3420,7 +3945,7 @@ function Timeline({
                   (item) => item.id === clip.sourceAssetId
                 )
                 const connected = Boolean(runtimeAssets[clip.sourceAssetId])
-                const trackIndex = getTrackIndex(clip)
+                const trackIndex = getRenderedTrackIndex(clip)
 
                 return (
                   <TimelineItem
@@ -3467,17 +3992,14 @@ function Timeline({
                     onDragCommit={(preview) =>
                       onClipChange(
                         clip.id,
-                        preview.patch as Partial<TimelineClip>
+                        preview.patch as Partial<TimelineClip>,
+                        { insertTrackAtTop: preview.insertTrackAtTop }
                       )
                     }
-                    onDragPreviewChange={(preview) =>
-                      onClipPreviewChange(
-                        clip.id,
-                        preview
-                          ? (preview.patch as Partial<TimelineClip>)
-                          : null
-                      )
-                    }
+                    onDragPreviewChange={(preview) => {
+                      updateTopTrackInsertPreview(clip.id, preview)
+                      onClipPreviewChange(clip.id, preview)
+                    }}
                     zoom={zoom}
                   />
                 )
@@ -3487,7 +4009,7 @@ function Timeline({
                   (item) => item.id === track.sourceAssetId
                 )
                 const connected = Boolean(runtimeAssets[track.sourceAssetId])
-                const trackIndex = getTrackIndex(track)
+                const trackIndex = getRenderedTrackIndex(track)
 
                 return (
                   <TimelineItem
@@ -3534,17 +4056,14 @@ function Timeline({
                     onDragCommit={(preview) =>
                       onMusicChange(
                         track.id,
-                        preview.patch as Partial<MusicTrack>
+                        preview.patch as Partial<MusicTrack>,
+                        { insertTrackAtTop: preview.insertTrackAtTop }
                       )
                     }
-                    onDragPreviewChange={(preview) =>
-                      onMusicPreviewChange(
-                        track.id,
-                        preview
-                          ? (preview.patch as Partial<MusicTrack>)
-                          : null
-                      )
-                    }
+                    onDragPreviewChange={(preview) => {
+                      updateTopTrackInsertPreview(track.id, preview)
+                      onMusicPreviewChange(track.id, preview)
+                    }}
                     zoom={zoom}
                   />
                 )
@@ -3772,15 +4291,27 @@ function TimelineItem({
               "clamp(0px, calc(var(--timeline-scroll-left, 0px) - var(--timeline-item-left, 0px)), var(--timeline-label-max-offset, 0px))",
             right: 0,
           }}
-          title={label}
+          title={connected ? label : `${label} · missing file`}
         >
           <span
             className={[
-              "block min-w-0 max-w-full truncate rounded px-1 py-0.5",
+              "flex min-w-0 max-w-full items-center gap-1 rounded px-1 py-0.5",
               selected ? "bg-primary" : "bg-background",
             ].join(" ")}
           >
-            {label}
+            <span className="min-w-0 truncate">{label}</span>
+            {!connected ? (
+              <Tooltip content="Missing local file">
+                <span
+                  className="pointer-events-auto inline-flex size-3 shrink-0 items-center justify-center text-destructive"
+                  tabIndex={0}
+                  aria-label="Missing local file"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <CircleExclamation className="size-3" />
+                </span>
+              </Tooltip>
+            ) : null}
           </span>
         </span>
       </div>
@@ -4006,6 +4537,57 @@ function getResolutionOptions(settings: Project["exportSettings"]) {
   return options
 }
 
+function getPreviewVideoLayerGeometry({
+  asset,
+  clip,
+  frameHeight,
+  frameWidth,
+}: {
+  asset?: SourceAsset
+  clip: TimelineClip
+  frameHeight: number
+  frameWidth: number
+}) {
+  const sourceAspectRatio =
+    asset?.width && asset.height
+      ? asset.width / asset.height
+      : frameWidth / frameHeight
+  const frameAspectRatio = frameWidth / frameHeight
+  const sourceWidth =
+    sourceAspectRatio >= frameAspectRatio
+      ? frameWidth
+      : frameHeight * sourceAspectRatio
+  const sourceHeight =
+    sourceAspectRatio >= frameAspectRatio
+      ? frameWidth / sourceAspectRatio
+      : frameHeight
+
+  return {
+    heightPercent: (sourceHeight / frameHeight) * 100,
+    positionX: getClipPositionX(clip),
+    positionY: getClipPositionY(clip),
+    scale: getClipScale(clip),
+    sourceHeight,
+    sourceWidth,
+    widthPercent: (sourceWidth / frameWidth) * 100,
+  }
+}
+
+function getPreviewVideoLayerStyle(
+  layerGeometry: ReturnType<typeof getPreviewVideoLayerGeometry>,
+  zIndex: number
+): CSSProperties {
+  return {
+    aspectRatio: `${layerGeometry.sourceWidth} / ${layerGeometry.sourceHeight}`,
+    height: `${layerGeometry.heightPercent}%`,
+    left: `${50 + layerGeometry.positionX}%`,
+    top: `${50 + layerGeometry.positionY}%`,
+    transform: `translate3d(-50%, -50%, 0) scale(${layerGeometry.scale})`,
+    width: `${layerGeometry.widthPercent}%`,
+    zIndex,
+  }
+}
+
 function getClipScale(clip: { scale?: number }) {
   return clamp(clip.scale ?? 1, 0, 2)
 }
@@ -4069,10 +4651,16 @@ type TimelineDropPreview = {
   width: number
   placement: TimelineDropPlacement
 }
+type TimelineDropMetadataCache = {
+  durationSeconds?: number
+  loaded?: boolean
+  promise?: Promise<number | undefined>
+}
 type TimelineItemDragPreview = {
   top: number
   left: number
   width: number
+  insertTrackAtTop?: boolean
   snapPreview?: TimelineSnapPreview
   trimPlayheadSeconds?: number
   patch: Partial<TimelineItemData>
@@ -4111,14 +4699,42 @@ function getTimelineDropPreview(
   event: DragEvent<HTMLDivElement>,
   zoom: number,
   duration: number,
-  contentInsetX: number
+  contentInsetX: number,
+  draggedDurationSeconds?: number
 ): TimelineDropPreview {
-  const container = event.currentTarget
+  return getTimelineDropPreviewFromPoint({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    container: event.currentTarget,
+    contentInsetX,
+    duration,
+    draggedDurationSeconds,
+    zoom,
+  })
+}
+
+function getTimelineDropPreviewFromPoint({
+  clientX,
+  clientY,
+  container,
+  contentInsetX,
+  duration,
+  draggedDurationSeconds,
+  zoom,
+}: {
+  clientX: number
+  clientY: number
+  container: HTMLDivElement
+  contentInsetX: number
+  duration: number
+  draggedDurationSeconds?: number
+  zoom: number
+}): TimelineDropPreview {
   const rect = container.getBoundingClientRect()
-  const y = event.clientY - rect.top
+  const y = clientY - rect.top
   const timelineStartSeconds = getTimelineSeconds(
     container,
-    event.clientX,
+    clientX,
     zoom,
     duration,
     contentInsetX
@@ -4131,12 +4747,105 @@ function getTimelineDropPreview(
   return {
     top: getTimelineTrackTop(trackIndex),
     left: contentInsetX + timelineStartSeconds * zoom,
-    width: Math.max(72, 5 * zoom),
+    width: getTimelineDropPreviewWidth(zoom, draggedDurationSeconds),
     placement: {
       timelineStartSeconds,
       trackIndex,
     },
   }
+}
+
+function getTimelineDropPreviewWidth(
+  zoom: number,
+  durationSeconds?: number
+) {
+  if (durationSeconds !== undefined && durationSeconds > 0) {
+    return Math.max(TIMELINE_DROP_FALLBACK_MIN_WIDTH, durationSeconds * zoom)
+  }
+
+  return Math.max(
+    TIMELINE_DROP_FALLBACK_MIN_WIDTH,
+    TIMELINE_DROP_FALLBACK_DURATION_SECONDS * zoom
+  )
+}
+
+function getTimelineDraggedFileDuration(
+  dataTransfer: DataTransfer,
+  cache: Map<string, TimelineDropMetadataCache>
+) {
+  const file = getFirstTimelineDraggedMediaFile(dataTransfer)
+
+  if (!file) {
+    return undefined
+  }
+
+  const cached = cache.get(getTimelineDraggedFileKey(file))
+
+  return cached?.loaded ? cached.durationSeconds : undefined
+}
+
+function loadTimelineDraggedFileDuration(
+  dataTransfer: DataTransfer,
+  cache: Map<string, TimelineDropMetadataCache>
+) {
+  const file = getFirstTimelineDraggedMediaFile(dataTransfer)
+  const type = file ? getFileKind(file) : null
+
+  if (!file || !type) {
+    return undefined
+  }
+
+  const key = getTimelineDraggedFileKey(file)
+  const cached = cache.get(key)
+
+  if (cached?.loaded) {
+    return Promise.resolve(cached.durationSeconds)
+  }
+
+  if (cached?.promise) {
+    return cached.promise
+  }
+
+  const promise = readMediaMetadata(file, type).then((metadata) => {
+    const durationSeconds =
+      metadata.durationSeconds !== undefined && metadata.durationSeconds > 0
+        ? metadata.durationSeconds
+        : undefined
+
+    cache.set(key, { durationSeconds, loaded: true })
+
+    return durationSeconds
+  })
+
+  cache.set(key, { promise })
+
+  return promise
+}
+
+function getFirstTimelineDraggedMediaFile(dataTransfer: DataTransfer) {
+  for (const item of Array.from(dataTransfer.items)) {
+    if (item.kind !== "file") {
+      continue
+    }
+
+    const file = item.getAsFile()
+
+    if (file && getFileKind(file)) {
+      return file
+    }
+  }
+
+  for (const file of Array.from(dataTransfer.files)) {
+    if (getFileKind(file)) {
+      return file
+    }
+  }
+
+  return null
+}
+
+function getTimelineDraggedFileKey(file: File) {
+  return [file.name, file.type, file.size, file.lastModified].join(":")
 }
 
 function hasDraggedFiles(dataTransfer: DataTransfer) {
@@ -4156,18 +4865,30 @@ function getTimelineItemDragPreview<T extends TimelineItemData>(
   snapThresholdSeconds: number,
   sourceDurationSeconds: number
 ): TimelineItemDragPreview {
-  const patch = getTimelineDragPatch(
-    item,
-    mode,
-    deltaSeconds,
-    deltaTracks,
-    sourceDurationSeconds
-  )
+  const rawTrackIndex = getTrackIndex(item) + deltaTracks
+  const insertTrackAtTop = mode === "move" && rawTrackIndex < 0
+  const constraintItems = insertTrackAtTop
+    ? shiftTimelineItemsForTopInsert(laneItems, item.id)
+    : laneItems
+  const constraintSnapItems =
+    snapItems && insertTrackAtTop
+      ? shiftTimelineItemsForTopInsert(snapItems, item.id)
+      : snapItems
+  const patch = {
+    ...getTimelineDragPatch(
+      item,
+      mode,
+      deltaSeconds,
+      deltaTracks,
+      sourceDurationSeconds
+    ),
+    ...(insertTrackAtTop ? { trackIndex: 0 } : null),
+  } as Partial<T>
   const next = constrainTimelineItemPatch(
     item,
-    laneItems,
+    constraintItems,
     patch,
-    snapItems,
+    constraintSnapItems,
     snapThresholdSeconds,
     sourceDurationSeconds
   )
@@ -4182,9 +4903,10 @@ function getTimelineItemDragPreview<T extends TimelineItemData>(
     : null
 
   return {
-    top: getTop(getTrackIndex(next)),
+    top: getTop(insertTrackAtTop ? 0 : getTrackIndex(next)),
     left: contentInsetX + next.timelineStartSeconds * zoom,
     width: duration * zoom,
+    insertTrackAtTop,
     snapPreview:
       snapGuideSeconds === null
         ? undefined
@@ -4200,6 +4922,17 @@ function getTimelineItemDragPreview<T extends TimelineItemData>(
           : undefined,
     patch: getTimelineCommitPatch(next, mode),
   }
+}
+
+function shiftTimelineItemsForTopInsert(
+  items: TimelineItemData[],
+  selectedItemId: string
+) {
+  return items.map((item) =>
+    item.id === selectedItemId
+      ? item
+      : { ...item, trackIndex: getTrackIndex(item) + 1 }
+  )
 }
 
 function getTimelineDragPatch<T extends TimelineItemData>(
@@ -4762,6 +5495,37 @@ function waitForMediaMetadata(media: HTMLMediaElement) {
   })
 }
 
+function waitForMediaFrame(media: HTMLMediaElement) {
+  if (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(onReady, 750)
+
+    function cleanup() {
+      window.clearTimeout(timeout)
+      media.removeEventListener("loadeddata", onReady)
+      media.removeEventListener("canplay", onReady)
+      media.removeEventListener("error", onError)
+    }
+
+    function onReady() {
+      cleanup()
+      resolve()
+    }
+
+    function onError() {
+      cleanup()
+      reject(new Error("Could not load media frame"))
+    }
+
+    media.addEventListener("loadeddata", onReady, { once: true })
+    media.addEventListener("canplay", onReady, { once: true })
+    media.addEventListener("error", onError, { once: true })
+  })
+}
+
 function waitForMediaSeek(media: HTMLMediaElement) {
   if (!media.seeking) {
     return Promise.resolve()
@@ -4871,6 +5635,107 @@ function isTextEditingTarget(target: EventTarget | null) {
     tagName === "select" ||
     target.getAttribute("role") === "textbox"
   )
+}
+
+function getPersistedFileBlob(file: File) {
+  if (file.size > MAX_PERSISTED_FILE_BLOB_BYTES) {
+    return undefined
+  }
+
+  return file
+}
+
+function getReconnectWarnings(
+  asset: SourceAsset,
+  file: File,
+  metadata: MediaMetadata
+) {
+  const warnings: string[] = []
+
+  if (file.name !== asset.name) {
+    warnings.push(`File name changed from ${asset.name} to ${file.name}.`)
+  }
+
+  if (file.size !== asset.sizeBytes) {
+    warnings.push(
+      `File size changed from ${formatBytes(asset.sizeBytes)} to ${formatBytes(
+        file.size
+      )}.`
+    )
+  }
+
+  if (
+    asset.durationSeconds !== undefined &&
+    metadata.durationSeconds !== undefined &&
+    Math.abs(asset.durationSeconds - metadata.durationSeconds) > 0.5
+  ) {
+    warnings.push(
+      `Duration changed from ${formatDuration(
+        asset.durationSeconds
+      )} to ${formatDuration(metadata.durationSeconds)}.`
+    )
+  }
+
+  if (
+    asset.width !== undefined &&
+    asset.height !== undefined &&
+    metadata.width !== undefined &&
+    metadata.height !== undefined &&
+    (asset.width !== metadata.width || asset.height !== metadata.height)
+  ) {
+    warnings.push(
+      `Resolution changed from ${asset.width}x${asset.height} to ${metadata.width}x${metadata.height}.`
+    )
+  }
+
+  return warnings
+}
+
+function publishLocalFileDebug(
+  phase: string,
+  project: Project,
+  restore?: LocalFileDebugRestore
+) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.__LOCAL_VIDEO_EDITOR_FILE_DEBUG__ = {
+    phase,
+    projectId: project.id,
+    projectName: project.name,
+    timestamp: new Date().toISOString(),
+    sourceAssets: project.sourceAssets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      sizeBytes: asset.sizeBytes,
+      durationSeconds: asset.durationSeconds,
+      width: asset.width,
+      height: asset.height,
+      hasFileHandle: Boolean(asset.fileHandle),
+      hasFileHandleGetFile: Boolean(asset.fileHandle?.getFile),
+      fileHandleName: asset.fileHandle?.name,
+      hasFileBlob: Boolean(asset.fileBlob),
+      fileBlobSize: asset.fileBlob?.size,
+    })),
+    restore: restore
+      ? {
+          restoredCount: restore.restoredCount,
+          permissionNeededCount: restore.permissionNeededCount,
+          unavailableCount: restore.unavailableCount,
+          diagnostics: restore.diagnostics,
+        }
+      : undefined,
+  }
+}
+
+function cleanupExportResult(state: ExportUiState) {
+  if (state.url) {
+    URL.revokeObjectURL(state.url)
+  }
+
+  state.cleanup?.().catch(() => undefined)
 }
 
 function mergeRuntimeAssets(

@@ -3,6 +3,7 @@ import type { Project, ProjectSummary } from "./types"
 const DB_NAME = "local-video-editor"
 const DB_VERSION = 1
 const PROJECT_STORE = "projects"
+const MAX_PERSISTED_FILE_BLOB_BYTES = 250 * 1024 * 1024
 
 function ensureBrowser() {
   if (typeof window === "undefined" || !("indexedDB" in window)) {
@@ -77,19 +78,38 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 }
 
 export async function getProject(id: string) {
-  return ((await withStore("readonly", (store) => store.get(id))) ??
+  const project = ((await withStore("readonly", (store) => store.get(id))) ??
     null) as Project | null
+
+  return project ? normalizeProjectSourceAssets(project) : null
 }
 
 export async function saveProject(project: Project) {
   await withStore("readwrite", (store) =>
-    store.put({
-      ...project,
-      updatedAt: Date.now(),
-    })
+    store.put(normalizeProjectForStorage(project))
   )
 }
 
 export async function deleteProject(id: string) {
   await withStore("readwrite", (store) => store.delete(id))
+}
+
+function normalizeProjectForStorage(project: Project): Project {
+  return {
+    ...normalizeProjectSourceAssets(project),
+    updatedAt: Date.now(),
+  }
+}
+
+function normalizeProjectSourceAssets(project: Project): Project {
+  return {
+    ...project,
+    sourceAssets: project.sourceAssets.map((asset) => ({
+      ...asset,
+      fileBlob:
+        asset.fileBlob && asset.fileBlob.size <= MAX_PERSISTED_FILE_BLOB_BYTES
+          ? asset.fileBlob
+          : undefined,
+    })),
+  }
 }

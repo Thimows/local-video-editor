@@ -1,5 +1,32 @@
+import {
+  ALL_FORMATS,
+  AudioBufferSource,
+  AudioSampleSink,
+  BlobSource,
+  BufferTarget,
+  CanvasSource,
+  Input,
+  Mp4OutputFormat,
+  Output,
+  QUALITY_HIGH,
+  StreamTarget,
+  WebMOutputFormat,
+  type AudioCodec,
+  type AudioSample,
+  type StreamTargetChunk,
+  type VideoSample,
+  VideoSampleSink,
+  type VideoCodec,
+} from "mediabunny"
+
 import { getClipDuration, getProjectDuration } from "./project"
-import type { ExportFormat, Project, RuntimeAssetMap } from "./types"
+import type {
+  ExportFormat,
+  MusicTrack,
+  Project,
+  RuntimeAssetMap,
+  TimelineClip,
+} from "./types"
 
 type ExportProgress = {
   progress: number
@@ -15,107 +42,56 @@ type ExportOptions = {
 
 type ExportResult = {
   blob: Blob
+  cleanup: () => Promise<void>
   extension: ExportFormat
   mimeType: string
 }
 
 type ClipNode = {
-  clip: Project["clips"][number]
-  video: HTMLVideoElement
-  audio: HTMLAudioElement
-  gain: GainNode
+  clip: TimelineClip
+  sample: VideoSample | null
+  sourcePromise: Promise<ExportVideoSource | null>
+  ready: boolean
 }
 
-type MusicNode = {
-  track: Project["musicTracks"][number]
-  audio: HTMLAudioElement
-  gain: GainNode
+type ExportAudioItem = TimelineClip | MusicTrack
+
+type ExportAudioSource = {
+  input: Input
+  sink: AudioSampleSink
 }
 
-function supportsMimeType(type: string) {
-  return (
-    typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type)
-  )
+type ExportVideoSource = {
+  input: Input
+  readSample: (
+    timestampSeconds: number,
+    signal: AbortSignal
+  ) => Promise<VideoSample | null>
+  close: () => void
 }
 
-function getExportMimeType(format: ExportFormat) {
-  if (format === "mp4") {
-    const mp4Types = [
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=h264,aac",
-      "video/mp4",
-    ]
-    const supportedMp4 = mp4Types.find(supportsMimeType)
-
-    if (!supportedMp4) {
-      throw new Error("MP4 export is not supported by this browser.")
-    }
-
-    return supportedMp4
-  }
-
-  return (
-    [
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/webm",
-    ].find(supportsMimeType) ??
-    (() => {
-      throw new Error("WebM export is not supported by this browser.")
-    })()
-  )
+type ExportOutputTarget = {
+  target: StreamTarget | BufferTarget
+  getBlob: (mimeType: string) => Promise<Blob>
+  cleanup: () => Promise<void>
 }
 
-function waitForEvent(
-  target: EventTarget,
-  eventName: string,
-  signal: AbortSignal
-) {
-  return new Promise<void>((resolve, reject) => {
-    function cleanup() {
-      target.removeEventListener(eventName, onEvent)
-      target.removeEventListener("error", onError)
-      signal.removeEventListener("abort", onAbort)
-    }
-
-    function onEvent() {
-      cleanup()
-      resolve()
-    }
-
-    function onError() {
-      cleanup()
-      reject(new Error(`Could not load media during export.`))
-    }
-
-    function onAbort() {
-      cleanup()
-      reject(
-        signal.reason ?? new DOMException("Export cancelled", "AbortError")
-      )
-    }
-
-    target.addEventListener(eventName, onEvent, { once: true })
-    target.addEventListener("error", onError, { once: true })
-    signal.addEventListener("abort", onAbort, { once: true })
-  })
+type ExportFormatConfig = {
+  audioCodec: AudioCodec
+  extension: ExportFormat
+  mimeType: string
+  outputFormat: Mp4OutputFormat | WebMOutputFormat
+  videoCodec: VideoCodec
 }
 
-function nextFrame(signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    const frame = requestAnimationFrame(() => resolve())
-    signal.addEventListener(
-      "abort",
-      () => {
-        cancelAnimationFrame(frame)
-        reject(
-          signal.reason ?? new DOMException("Export cancelled", "AbortError")
-        )
-      },
-      { once: true }
-    )
-  })
-}
+const EXPORT_MEDIA_PRELOAD_SECONDS = 1.5
+const EXPORT_MEDIA_POSTROLL_SECONDS = 0.35
+const EXPORT_EDGE_SAMPLE_SECONDS = 1 / 60
+const EXPORT_AUDIO_SAMPLE_RATE = 48_000
+const EXPORT_AUDIO_CHANNELS = 2
+const EXPORT_AUDIO_CHUNK_SECONDS = 0.5
+const EXPORT_AUDIO_LOOKAHEAD_SECONDS = 1
+const EXPORT_OPFS_CHUNK_SIZE = 8 * 1024 * 1024
 
 export async function exportProjectToVideo({
   project,
@@ -123,11 +99,10 @@ export async function exportProjectToVideo({
   signal,
   onProgress,
 }: ExportOptions): Promise<ExportResult> {
-  if (typeof MediaRecorder === "undefined") {
-    throw new Error("MediaRecorder export is not supported in this browser.")
+  if (typeof VideoEncoder === "undefined") {
+    throw new Error("WebCodecs video export is not supported in this browser.")
   }
 
-  const mimeType = getExportMimeType(project.exportSettings.format)
   const clips = [...project.clips].sort(
     (a, b) =>
       a.timelineStartSeconds - b.timelineStartSeconds ||
@@ -135,6 +110,11 @@ export async function exportProjectToVideo({
   )
   const totalDuration = getProjectDuration(project)
   const timelineItems = [...project.clips, ...project.musicTracks]
+  const hasAudioTrack = timelineItems.some(isAudibleTimelineItem)
+
+  if (hasAudioTrack && typeof AudioEncoder === "undefined") {
+    throw new Error("WebCodecs audio export is not supported in this browser.")
+  }
 
   if (timelineItems.length === 0 || totalDuration <= 0) {
     throw new Error("Add at least one timeline item before exporting.")
@@ -146,6 +126,7 @@ export async function exportProjectToVideo({
     }
   }
 
+  const config = getExportFormatConfig(project.exportSettings.format)
   const canvas = document.createElement("canvas")
   canvas.width = project.exportSettings.width
   canvas.height = project.exportSettings.height
@@ -155,252 +136,772 @@ export async function exportProjectToVideo({
     throw new Error("Canvas export is not available in this browser.")
   }
 
-  const audioContext = new AudioContext()
-  const audioDestination = audioContext.createMediaStreamDestination()
-  let stream: MediaStream | null = null
-  let recorder: MediaRecorder | null = null
-  let recordingComplete: Promise<void> | null = null
-  let clipNodes: ClipNode[] = []
-  let musicNodes: MusicNode[] = []
-  const timers: number[] = []
-  const chunks: BlobPart[] = []
+  const outputTarget = await createExportOutputTarget(config.extension)
+  const output = new Output({
+    format: config.outputFormat,
+    target: outputTarget.target,
+  })
+  const videoSource = new CanvasSource(canvas, {
+    codec: config.videoCodec,
+    bitrate: project.exportSettings.videoBitsPerSecond || QUALITY_HIGH,
+    keyFrameInterval: 2,
+  })
+  const audioSource = hasAudioTrack
+    ? new AudioBufferSource({
+        codec: config.audioCodec,
+        bitrate: project.exportSettings.audioBitsPerSecond || QUALITY_HIGH,
+        transform: {
+          numberOfChannels: EXPORT_AUDIO_CHANNELS,
+          sampleFormat: "f32",
+          sampleRate: EXPORT_AUDIO_SAMPLE_RATE,
+        },
+      })
+    : null
+  const clipNodes = new Map<string, ClipNode>()
+  const audioSources = new Map<string, Promise<ExportAudioSource | null>>()
+  let outputStarted = false
+  let outputFinalized = false
+  let exportCompleted = false
+
+  output.addVideoTrack(videoSource, {
+    frameRate: project.exportSettings.fps,
+  })
+
+  if (audioSource) {
+    output.addAudioTrack(audioSource)
+  }
 
   try {
-    clipNodes = await createClipNodes({
-      audioContext,
-      audioDestination,
-      clips,
-      runtimeAssets,
-      signal,
-    })
-    musicNodes = await createMusicNodes({
-      audioContext,
-      audioDestination,
-      project,
-      runtimeAssets,
-      signal,
-    })
+    onProgress({ progress: 0, message: "Preparing local encoder" })
+    await output.start()
+    outputStarted = true
+    const mimeTypePromise = output.getMimeType()
+    const frameDuration = 1 / project.exportSettings.fps
+    const frameCount = Math.ceil(totalDuration * project.exportSettings.fps)
+    const keyFrameInterval = Math.max(
+      1,
+      Math.round(project.exportSettings.fps * 2)
+    )
+    let nextAudioTime = 0
 
-    const canvasStream = canvas.captureStream(project.exportSettings.fps)
-    stream = new MediaStream([
-      ...canvasStream.getVideoTracks(),
-      ...audioDestination.stream.getAudioTracks(),
-    ])
-    recorder = new MediaRecorder(stream, {
-      mimeType,
-      videoBitsPerSecond: project.exportSettings.videoBitsPerSecond,
-      audioBitsPerSecond: project.exportSettings.audioBitsPerSecond,
-    })
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      throwIfAborted(signal)
+      const timelineSeconds = Math.min(frameIndex * frameDuration, totalDuration)
 
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunks.push(event.data)
+      if (audioSource) {
+        if (frameIndex === 0) {
+          onProgress({ progress: 0.01, message: "Preparing export audio" })
+        }
+
+        const audioUntilSeconds = getNextAudioChunkEndSeconds(
+          timelineSeconds,
+          totalDuration
+        )
+
+        nextAudioTime = await addAudioChunksUntil({
+          audioSource,
+          audioSources,
+          project,
+          runtimeAssets,
+          signal,
+          startSeconds: nextAudioTime,
+          untilSeconds: audioUntilSeconds,
+        })
       }
-    }
 
-    recordingComplete = waitForEvent(recorder, "stop", signal)
+      if (frameIndex === 0) {
+        onProgress({ progress: 0.02, message: "Preparing first video frame" })
+      }
 
-    await audioContext.resume()
-    recorder.start(1000)
-
-    const exportStartedAt = performance.now()
-
-    timers.push(...scheduleClipPlayback(clipNodes, signal))
-    timers.push(...scheduleMusicPlayback(musicNodes, signal))
-
-    while (!signal.aborted) {
-      const elapsed = (performance.now() - exportStartedAt) / 1000
-      const timelineSeconds = Math.min(elapsed, totalDuration)
-
+      await prepareExportVideoWindow({
+        clipNodes,
+        clips,
+        runtimeAssets,
+        signal,
+        timelineSeconds,
+      })
       drawTimelineFrame({
         canvas,
-        clipNodes,
+        clipNodes: Array.from(clipNodes.values()),
         context,
         timelineSeconds,
       })
-      onProgress({
-        progress: Math.min(0.98, timelineSeconds / totalDuration),
-        message: `Rendering ${Math.round(timelineSeconds)}s of ${Math.round(
-          totalDuration
-        )}s`,
+      closeCurrentVideoSamples(clipNodes)
+      await videoSource.add(timelineSeconds, frameDuration, {
+        keyFrame: frameIndex % keyFrameInterval === 0,
       })
 
-      if (timelineSeconds >= totalDuration) {
-        break
+      if (frameIndex % 5 === 0) {
+        onProgress({
+          progress: Math.min(0.98, timelineSeconds / totalDuration),
+          message: `Encoding ${Math.round(timelineSeconds)}s of ${Math.round(
+            totalDuration
+          )}s`,
+        })
       }
 
-      await nextFrame(signal)
+      if (frameIndex % 8 === 0) {
+        await yieldToBrowser(signal)
+      }
     }
-    recorder.stop()
-    await recordingComplete
+
+    if (audioSource) {
+      await addAudioChunksUntil({
+        audioSource,
+        audioSources,
+        project,
+        runtimeAssets,
+        signal,
+        startSeconds: nextAudioTime,
+        untilSeconds: totalDuration,
+      })
+      audioSource.close()
+    }
+
+    videoSource.close()
+    onProgress({ progress: 0.99, message: "Finalizing local file" })
+    await output.finalize()
+    outputFinalized = true
+    const mimeType = await mimeTypePromise.catch(() => config.mimeType)
+    const blob = await outputTarget.getBlob(mimeType)
+
+    exportCompleted = true
+    onProgress({ progress: 1, message: "Export ready" })
+
+    return {
+      blob,
+      cleanup: outputTarget.cleanup,
+      extension: config.extension,
+      mimeType,
+    }
+  } catch (reason) {
+    if (outputStarted && !outputFinalized) {
+      await output.cancel().catch(() => undefined)
+    }
+
+    throw reason
   } finally {
-    timers.forEach((timer) => window.clearTimeout(timer))
-    stopMedia(clipNodes, musicNodes)
-    if (recorder && recorder.state !== "inactive") {
-      try {
-        recorder.stop()
-      } catch {
-        // Recorder may already be closing after a cancellation.
-      }
+    disposeClipNodes(clipNodes)
+    await disposeExportAudioSources(audioSources)
+
+    if (!exportCompleted) {
+      await outputTarget.cleanup()
     }
-    await recordingComplete?.catch(() => undefined)
-    stream?.getTracks().forEach((track) => track.stop())
-    await audioContext.close().catch(() => undefined)
-  }
-
-  onProgress({ progress: 1, message: "Export ready" })
-
-  return {
-    blob: new Blob(chunks, { type: mimeType }),
-    extension: project.exportSettings.format,
-    mimeType,
   }
 }
 
-async function createClipNodes({
-  audioContext,
-  audioDestination,
+async function prepareExportVideoWindow({
+  clipNodes,
   clips,
   runtimeAssets,
   signal,
+  timelineSeconds,
 }: {
-  audioContext: AudioContext
-  audioDestination: MediaStreamAudioDestinationNode
-  clips: Project["clips"]
+  clipNodes: Map<string, ClipNode>
+  clips: TimelineClip[]
   runtimeAssets: RuntimeAssetMap
   signal: AbortSignal
+  timelineSeconds: number
 }) {
-  return Promise.all(
-    clips.map(async (clip) => {
-      const runtimeAsset = runtimeAssets[clip.sourceAssetId]
+  const neededClipIds = new Set<string>()
 
-      if (!runtimeAsset) {
-        throw new Error("Reconnect all source video files before exporting.")
-      }
-
-      const video = document.createElement("video")
-      const audio = document.createElement("audio")
-      const source = audioContext.createMediaElementSource(audio)
-      const gain = audioContext.createGain()
-
-      video.src = runtimeAsset.objectUrl
-      video.muted = true
-      video.playsInline = true
-      video.preload = "auto"
-      audio.src = runtimeAsset.objectUrl
-      audio.preload = "auto"
-      gain.gain.value = clip.muted ? 0 : getExportVolume(clip.volume)
-      source.connect(gain).connect(audioDestination)
-
-      await waitForMediaMetadata(video, signal)
-      await seekMedia(video, clip.sourceStartSeconds, signal)
-      await waitForMediaMetadata(audio, signal)
-      await seekMedia(audio, clip.sourceStartSeconds, signal)
-
-      return { clip, video, audio, gain }
-    })
-  )
-}
-
-async function createMusicNodes({
-  audioContext,
-  audioDestination,
-  project,
-  runtimeAssets,
-  signal,
-}: {
-  audioContext: AudioContext
-  audioDestination: MediaStreamAudioDestinationNode
-  project: Project
-  runtimeAssets: RuntimeAssetMap
-  signal: AbortSignal
-}) {
-  const nodes = project.musicTracks.flatMap((track) => {
-    const runtimeAsset = runtimeAssets[track.sourceAssetId]
-
-    if (!runtimeAsset) {
-      return []
+  for (const clip of clips) {
+    if (!isWithinExportMediaWindow(clip, timelineSeconds)) {
+      continue
     }
 
-    const audio = document.createElement("audio")
-    const source = audioContext.createMediaElementSource(audio)
-    const gain = audioContext.createGain()
+    const runtimeAsset = runtimeAssets[clip.sourceAssetId]
 
-    audio.src = runtimeAsset.objectUrl
-    audio.preload = "auto"
-    gain.gain.value = getExportVolume(track.volume)
-    source.connect(gain).connect(audioDestination)
+    if (!runtimeAsset) {
+      throw new Error("Reconnect all source video files before exporting.")
+    }
 
-    return [{ audio, gain, track }]
-  })
+    neededClipIds.add(clip.id)
 
-  await Promise.all(
-    nodes.map(async ({ audio, track }) => {
-      await waitForMediaMetadata(audio, signal)
-      await seekMedia(audio, track.sourceStartSeconds, signal)
-    })
-  )
+    const node =
+      clipNodes.get(clip.id) ??
+      createClipNode({
+        clip,
+        file: runtimeAsset.file,
+        signal,
+      })
 
-  return nodes
+    clipNodes.set(clip.id, node)
+    node.clip = clip
+
+    if (isActiveAt(clip, timelineSeconds)) {
+      await syncClipNode({
+        node,
+        signal,
+        timelineSeconds,
+      })
+    }
+  }
+
+  for (const [id, node] of clipNodes) {
+    if (!neededClipIds.has(id)) {
+      disposeClipNode(node)
+      clipNodes.delete(id)
+    }
+  }
 }
 
-function waitForMediaMetadata(media: HTMLMediaElement, signal: AbortSignal) {
-  return media.readyState >= HTMLMediaElement.HAVE_METADATA
-    ? Promise.resolve()
-    : waitForEvent(media, "loadedmetadata", signal)
-}
-
-async function seekMedia(
-  media: HTMLMediaElement,
-  seconds: number,
+function createClipNode({
+  clip,
+  file,
+  signal,
+}: {
+  clip: TimelineClip
+  file: File
   signal: AbortSignal
-) {
-  media.currentTime = seconds
+}) {
+  const node: ClipNode = {
+    clip,
+    ready: false,
+    sample: null,
+    sourcePromise: Promise.resolve(null),
+  }
 
-  if (!media.seeking) {
+  node.sourcePromise = createExportVideoSource(file, signal).then((source) => {
+    node.ready = Boolean(source)
+
+    return source
+  })
+  node.sourcePromise.catch(() => undefined)
+
+  return node
+}
+
+async function syncClipNode({
+  node,
+  signal,
+  timelineSeconds,
+}: {
+  node: ClipNode
+  signal: AbortSignal
+  timelineSeconds: number
+}) {
+  const source = await node.sourcePromise
+
+  if (!node.ready || !source || signal.aborted) {
     return
   }
 
-  await waitForEvent(media, "seeked", signal)
+  node.sample?.close()
+  node.sample = await source.readSample(
+    getSourceTimeForTimelineItem(node.clip, timelineSeconds),
+    signal
+  )
 }
 
-function scheduleClipPlayback(nodes: ClipNode[], signal: AbortSignal) {
-  return nodes.flatMap(({ audio, clip, video }) => {
-    const startTimer = window.setTimeout(() => {
-      if (signal.aborted) {
-        return
-      }
-
-      video.currentTime = clip.sourceStartSeconds
-      audio.currentTime = clip.sourceStartSeconds
-      video.play().catch(() => undefined)
-      audio.play().catch(() => undefined)
-    }, Math.max(0, clip.timelineStartSeconds * 1000))
-    const stopTimer = window.setTimeout(() => {
-      video.pause()
-      audio.pause()
-    }, Math.max(0, (clip.timelineStartSeconds + getClipDuration(clip)) * 1000))
-
-    return [startTimer, stopTimer]
+async function createExportVideoSource(
+  file: File,
+  signal: AbortSignal
+): Promise<ExportVideoSource | null> {
+  const input = new Input({
+    source: new BlobSource(file),
+    formats: ALL_FORMATS,
   })
+
+  try {
+    throwIfAborted(signal)
+    const videoTrack = await input.getPrimaryVideoTrack()
+
+    if (!videoTrack || !(await videoTrack.canDecode())) {
+      input.dispose()
+      return null
+    }
+
+    const sink = new VideoSampleSink(videoTrack, {
+      optimizeForLatency: true,
+    })
+    const reader = createExportVideoSampleReader(sink)
+
+    return {
+      input,
+      readSample: reader.readSample,
+      close: () => {
+        reader.close()
+        input.dispose()
+      },
+    }
+  } catch (reason) {
+    input.dispose()
+    throw reason
+  }
 }
 
-function scheduleMusicPlayback(nodes: MusicNode[], signal: AbortSignal) {
-  return nodes.flatMap(({ audio, track }) => {
-    const startTimer = window.setTimeout(() => {
-      if (signal.aborted) {
-        return
+function createExportVideoSampleReader(sink: VideoSampleSink) {
+  let iterator: AsyncIterator<VideoSample> | null = null
+  let currentSample: VideoSample | null = null
+  let nextSample: VideoSample | null = null
+  let lastTimestamp = -Infinity
+  let closed = false
+  let readQueue = Promise.resolve()
+
+  function resetIterator() {
+    currentSample?.close()
+    nextSample?.close()
+    currentSample = null
+    nextSample = null
+    iterator?.return?.().catch(() => undefined)
+    iterator = null
+  }
+
+  async function readNextSample() {
+    if (!iterator) {
+      return null
+    }
+
+    const result = await iterator.next()
+
+    return result.done ? null : result.value
+  }
+
+  function readSample(timestampSeconds: number, signal: AbortSignal) {
+    const read = readQueue.then(async () => {
+      if (closed) {
+        return null
       }
 
-      audio.currentTime = track.sourceStartSeconds
-      audio.play().catch(() => undefined)
-    }, Math.max(0, track.timelineStartSeconds * 1000))
-    const stopTimer = window.setTimeout(() => {
-      audio.pause()
-    }, Math.max(0, (track.timelineStartSeconds + getClipDuration(track)) * 1000))
+      throwIfAborted(signal)
 
-    return [startTimer, stopTimer]
+      if (!iterator || timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS < lastTimestamp) {
+        resetIterator()
+        iterator = sink
+          .samples(Math.max(0, timestampSeconds - EXPORT_EDGE_SAMPLE_SECONDS), undefined, {
+            skipLiveWait: true,
+          })
+          [Symbol.asyncIterator]()
+        currentSample = await readNextSample()
+        nextSample = await readNextSample()
+      }
+
+      lastTimestamp = timestampSeconds
+
+      while (
+        nextSample &&
+        nextSample.timestamp <= timestampSeconds + EXPORT_EDGE_SAMPLE_SECONDS
+      ) {
+        currentSample?.close()
+        currentSample = nextSample
+        nextSample = await readNextSample()
+      }
+
+      throwIfAborted(signal)
+
+      return currentSample?.clone() ?? null
+    })
+
+    readQueue = read.then(
+      () => undefined,
+      () => undefined
+    )
+
+    return read
+  }
+
+  return {
+    readSample,
+    close: () => {
+      closed = true
+      resetIterator()
+    },
+  }
+}
+
+async function addAudioChunksUntil({
+  audioSource,
+  audioSources,
+  project,
+  runtimeAssets,
+  signal,
+  startSeconds,
+  untilSeconds,
+}: {
+  audioSource: AudioBufferSource
+  audioSources: Map<string, Promise<ExportAudioSource | null>>
+  project: Project
+  runtimeAssets: RuntimeAssetMap
+  signal: AbortSignal
+  startSeconds: number
+  untilSeconds: number
+}) {
+  let nextStart = startSeconds
+
+  while (nextStart < untilSeconds - 0.000_001) {
+    throwIfAborted(signal)
+    const durationSeconds = Math.min(
+      EXPORT_AUDIO_CHUNK_SECONDS,
+      untilSeconds - nextStart
+    )
+    const buffer = await renderAudioChunk({
+      audioSources,
+      durationSeconds,
+      project,
+      runtimeAssets,
+      signal,
+      startSeconds: nextStart,
+    })
+
+    await audioSource.add(buffer)
+    nextStart += durationSeconds
+  }
+
+  return nextStart
+}
+
+function getNextAudioChunkEndSeconds(
+  timelineSeconds: number,
+  totalDuration: number
+) {
+  const rawUntilSeconds = Math.min(
+    totalDuration,
+    timelineSeconds + EXPORT_AUDIO_LOOKAHEAD_SECONDS
+  )
+  const chunkedUntilSeconds =
+    Math.ceil(rawUntilSeconds / EXPORT_AUDIO_CHUNK_SECONDS) *
+    EXPORT_AUDIO_CHUNK_SECONDS
+
+  return Math.min(totalDuration, chunkedUntilSeconds)
+}
+
+async function renderAudioChunk({
+  audioSources,
+  durationSeconds,
+  project,
+  runtimeAssets,
+  signal,
+  startSeconds,
+}: {
+  audioSources: Map<string, Promise<ExportAudioSource | null>>
+  durationSeconds: number
+  project: Project
+  runtimeAssets: RuntimeAssetMap
+  signal: AbortSignal
+  startSeconds: number
+}) {
+  const buffer = new AudioBuffer({
+    length: Math.max(1, Math.round(durationSeconds * EXPORT_AUDIO_SAMPLE_RATE)),
+    numberOfChannels: EXPORT_AUDIO_CHANNELS,
+    sampleRate: EXPORT_AUDIO_SAMPLE_RATE,
   })
+  const endSeconds = startSeconds + durationSeconds
+  const audioItems: ExportAudioItem[] = [
+    ...project.clips.filter(isAudibleTimelineItem),
+    ...project.musicTracks.filter(isAudibleTimelineItem),
+  ]
+
+  for (const item of audioItems) {
+    if (!rangesOverlap(startSeconds, endSeconds, getItemStart(item), getItemEnd(item))) {
+      continue
+    }
+
+    const runtimeAsset = runtimeAssets[item.sourceAssetId]
+
+    if (!runtimeAsset) {
+      throw new Error("Reconnect all source files before exporting.")
+    }
+
+    const source = await getExportAudioSource({
+      audioSources,
+      assetId: item.sourceAssetId,
+      file: runtimeAsset.file,
+    })
+
+    if (!source) {
+      continue
+    }
+
+    const overlapStart = Math.max(startSeconds, getItemStart(item))
+    const overlapEnd = Math.min(endSeconds, getItemEnd(item))
+    const sourceStart =
+      item.sourceStartSeconds + overlapStart - item.timelineStartSeconds
+    const sourceEnd =
+      item.sourceStartSeconds + overlapEnd - item.timelineStartSeconds
+
+    await mixAudioRangeIntoBuffer({
+      buffer,
+      destinationOffsetSeconds: overlapStart - startSeconds,
+      signal,
+      source,
+      sourceEndSeconds: sourceEnd,
+      sourceStartSeconds: sourceStart,
+      volume: getExportVolume(item.volume),
+    })
+  }
+
+  return buffer
+}
+
+async function getExportAudioSource({
+  assetId,
+  audioSources,
+  file,
+}: {
+  assetId: string
+  audioSources: Map<string, Promise<ExportAudioSource | null>>
+  file: File
+}) {
+  let sourcePromise = audioSources.get(assetId)
+
+  if (!sourcePromise) {
+    sourcePromise = createExportAudioSource(file)
+    audioSources.set(assetId, sourcePromise)
+  }
+
+  return sourcePromise
+}
+
+async function createExportAudioSource(
+  file: File
+): Promise<ExportAudioSource | null> {
+  const input = new Input({
+    source: new BlobSource(file),
+    formats: ALL_FORMATS,
+  })
+
+  try {
+    const audioTrack = await input.getPrimaryAudioTrack()
+
+    if (!audioTrack || !(await audioTrack.canDecode())) {
+      input.dispose()
+      return null
+    }
+
+    return {
+      input,
+      sink: new AudioSampleSink(audioTrack),
+    }
+  } catch (reason) {
+    input.dispose()
+    throw reason
+  }
+}
+
+async function mixAudioRangeIntoBuffer({
+  buffer,
+  destinationOffsetSeconds,
+  signal,
+  source,
+  sourceEndSeconds,
+  sourceStartSeconds,
+  volume,
+}: {
+  buffer: AudioBuffer
+  destinationOffsetSeconds: number
+  signal: AbortSignal
+  source: ExportAudioSource
+  sourceEndSeconds: number
+  sourceStartSeconds: number
+  volume: number
+}) {
+  if (volume <= 0 || sourceEndSeconds <= sourceStartSeconds) {
+    return
+  }
+
+  for await (const sample of source.sink.samples(
+    sourceStartSeconds,
+    sourceEndSeconds
+  )) {
+    throwIfAborted(signal)
+
+    try {
+      mixAudioSampleIntoBuffer({
+        buffer,
+        destinationOffsetSeconds,
+        sample,
+        sourceEndSeconds,
+        sourceStartSeconds,
+        volume,
+      })
+    } finally {
+      sample.close()
+    }
+  }
+}
+
+function mixAudioSampleIntoBuffer({
+  buffer,
+  destinationOffsetSeconds,
+  sample,
+  sourceEndSeconds,
+  sourceStartSeconds,
+  volume,
+}: {
+  buffer: AudioBuffer
+  destinationOffsetSeconds: number
+  sample: AudioSample
+  sourceEndSeconds: number
+  sourceStartSeconds: number
+  volume: number
+}) {
+  const frameCount = sample.numberOfFrames
+
+  if (frameCount <= 0 || sample.numberOfChannels <= 0) {
+    return
+  }
+
+  const sampleStart = sample.timestamp
+  const sampleEnd = sampleStart + frameCount / sample.sampleRate
+  const overlapStart = Math.max(sourceStartSeconds, sampleStart)
+  const overlapEnd = Math.min(sourceEndSeconds, sampleEnd)
+
+  if (overlapEnd <= overlapStart) {
+    return
+  }
+
+  const sourceChannels = Array.from(
+    { length: sample.numberOfChannels },
+    (_, channel) => {
+      const data = new Float32Array(frameCount)
+      sample.copyTo(data, {
+        format: "f32-planar",
+        planeIndex: channel,
+      })
+      return data
+    }
+  )
+  const outputChannels = Array.from(
+    { length: buffer.numberOfChannels },
+    (_, channel) => buffer.getChannelData(channel)
+  )
+  const destinationStartFrame = clamp(
+    Math.floor(
+      (destinationOffsetSeconds + overlapStart - sourceStartSeconds) *
+        buffer.sampleRate
+    ),
+    0,
+    buffer.length
+  )
+  const destinationEndFrame = clamp(
+    Math.ceil(
+      (destinationOffsetSeconds + overlapEnd - sourceStartSeconds) *
+        buffer.sampleRate
+    ),
+    destinationStartFrame,
+    buffer.length
+  )
+
+  for (
+    let destinationFrame = destinationStartFrame;
+    destinationFrame < destinationEndFrame;
+    destinationFrame += 1
+  ) {
+    const sourceTime =
+      sourceStartSeconds +
+      destinationFrame / buffer.sampleRate -
+      destinationOffsetSeconds
+    const sampleFrame = clamp(
+      Math.floor((sourceTime - sampleStart) * sample.sampleRate),
+      0,
+      frameCount - 1
+    )
+
+    for (let channel = 0; channel < outputChannels.length; channel += 1) {
+      const outputChannel = outputChannels[channel]
+      const sourceChannel =
+        sourceChannels[Math.min(channel, sourceChannels.length - 1)]
+
+      if (!outputChannel) {
+        continue
+      }
+
+      outputChannel[destinationFrame] = clamp(
+        (outputChannel[destinationFrame] ?? 0) +
+          (sourceChannel?.[sampleFrame] ?? 0) * volume,
+        -1,
+        1
+      )
+    }
+  }
+}
+
+async function createExportOutputTarget(
+  format: ExportFormat
+): Promise<ExportOutputTarget> {
+  const opfsTarget = await createOpfsExportOutputTarget(format).catch(
+    () => null
+  )
+
+  if (opfsTarget) {
+    return opfsTarget
+  }
+
+  const target = new BufferTarget()
+
+  return {
+    target,
+    cleanup: async () => undefined,
+    getBlob: async (mimeType) => {
+      if (!target.buffer) {
+        throw new Error("Export did not produce a video file.")
+      }
+
+      return new Blob([target.buffer], { type: mimeType })
+    },
+  }
+}
+
+async function createOpfsExportOutputTarget(
+  format: ExportFormat
+): Promise<ExportOutputTarget | null> {
+  const root = await navigator.storage?.getDirectory?.()
+
+  if (!root) {
+    return null
+  }
+
+  const directory = await root.getDirectoryHandle("exports", { create: true })
+  const fileName = `${crypto.randomUUID()}.${format}`
+  const fileHandle = await directory.getFileHandle(fileName, { create: true })
+  const writable = await fileHandle.createWritable?.()
+
+  if (!writable) {
+    return null
+  }
+
+  return {
+    target: new StreamTarget(writable as WritableStream<StreamTargetChunk>, {
+      chunkSize: EXPORT_OPFS_CHUNK_SIZE,
+      chunked: true,
+    }),
+    cleanup: async () => {
+      await directory.removeEntry(fileName).catch(() => undefined)
+    },
+    getBlob: async (mimeType) => {
+      const file = await fileHandle.getFile()
+
+      return file.type === mimeType
+        ? file
+        : new File([file], file.name, { type: mimeType })
+    },
+  }
+}
+
+function getExportFormatConfig(format: ExportFormat): ExportFormatConfig {
+  if (format === "mp4") {
+    return {
+      audioCodec: "aac",
+      extension: "mp4",
+      mimeType: "video/mp4",
+      outputFormat: new Mp4OutputFormat({
+        fastStart: "fragmented",
+        minimumFragmentDuration: 1,
+      }),
+      videoCodec: "avc",
+    }
+  }
+
+  return {
+    audioCodec: "opus",
+    extension: "webm",
+    mimeType: "video/webm",
+    outputFormat: new WebMOutputFormat({
+      minimumClusterDuration: 1,
+    }),
+    videoCodec: "vp9",
+  }
 }
 
 function drawTimelineFrame({
@@ -421,23 +922,24 @@ function drawTimelineFrame({
     .filter(({ clip }) => isActiveAt(clip, timelineSeconds))
     .sort((a, b) => getTrackIndex(b.clip) - getTrackIndex(a.clip))
 
-  for (const { clip, video } of activeClips) {
-    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-      drawTransformedSource(context, video, canvas.width, canvas.height, clip)
+  for (const { clip, sample } of activeClips) {
+    if (sample) {
+      drawTransformedSource(context, sample, canvas.width, canvas.height, clip)
     }
   }
 }
 
 function drawTransformedSource(
   context: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
+  sample: VideoSample,
   width: number,
   height: number,
-  clip: Project["clips"][number]
+  clip: TimelineClip
 ) {
-  const videoRatio = video.videoWidth / video.videoHeight || width / height
-  const baseWidth = video.videoWidth || width
-  const baseHeight = video.videoHeight || baseWidth / videoRatio
+  const videoRatio = sample.displayWidth / sample.displayHeight || width / height
+  const frameRatio = width / height
+  const baseWidth = videoRatio >= frameRatio ? width : height * videoRatio
+  const baseHeight = videoRatio >= frameRatio ? width / videoRatio : height
   const scale = getClipScale(clip)
   const drawWidth = baseWidth * scale
   const drawHeight = baseHeight * scale
@@ -446,21 +948,44 @@ function drawTransformedSource(
   const y =
     (height - drawHeight) / 2 + (getClipPositionY(clip) / 100) * height
 
-  context.drawImage(video, x, y, drawWidth, drawHeight)
+  sample.draw(context, x, y, drawWidth, drawHeight)
 }
 
-function stopMedia(clipNodes: ClipNode[], musicNodes: MusicNode[]) {
-  for (const { audio, video } of clipNodes) {
-    audio.pause()
-    video.pause()
-    audio.src = ""
-    video.src = ""
+function closeCurrentVideoSamples(nodes: Map<string, ClipNode>) {
+  for (const node of nodes.values()) {
+    node.sample?.close()
+    node.sample = null
+  }
+}
+
+function disposeClipNodes(nodes: Map<string, ClipNode>) {
+  for (const node of nodes.values()) {
+    disposeClipNode(node)
   }
 
-  for (const { audio } of musicNodes) {
-    audio.pause()
-    audio.src = ""
+  nodes.clear()
+}
+
+function disposeClipNode(node: ClipNode) {
+  node.sample?.close()
+  node.sample = null
+  node.sourcePromise
+    .then((source) => source?.close())
+    .catch(() => undefined)
+}
+
+async function disposeExportAudioSources(
+  audioSources: Map<string, Promise<ExportAudioSource | null>>
+) {
+  const sources = await Promise.allSettled(audioSources.values())
+
+  for (const source of sources) {
+    if (source.status === "fulfilled") {
+      source.value?.input.dispose()
+    }
   }
+
+  audioSources.clear()
 }
 
 function isActiveAt(
@@ -475,6 +1000,70 @@ function isActiveAt(
   const end = item.timelineStartSeconds + getClipDuration(item)
 
   return seconds >= start && seconds < end
+}
+
+function isWithinExportMediaWindow(
+  item: {
+    sourceStartSeconds: number
+    sourceEndSeconds: number
+    timelineStartSeconds: number
+  },
+  seconds: number
+) {
+  const start = item.timelineStartSeconds
+  const end = item.timelineStartSeconds + getClipDuration(item)
+
+  return (
+    seconds + EXPORT_MEDIA_PRELOAD_SECONDS >= start &&
+    seconds <= end + EXPORT_MEDIA_POSTROLL_SECONDS
+  )
+}
+
+function getSourceTimeForTimelineItem(
+  item: {
+    sourceStartSeconds: number
+    sourceEndSeconds: number
+    timelineStartSeconds: number
+  },
+  timelineSeconds: number
+) {
+  const itemOffset = clamp(
+    timelineSeconds - item.timelineStartSeconds,
+    0,
+    getClipDuration(item)
+  )
+  const sourceTime = item.sourceStartSeconds + itemOffset
+  const maxPreviewSourceTime = Math.max(
+    item.sourceStartSeconds,
+    item.sourceEndSeconds - EXPORT_EDGE_SAMPLE_SECONDS
+  )
+
+  return clamp(sourceTime, item.sourceStartSeconds, maxPreviewSourceTime)
+}
+
+function isAudibleTimelineItem(item: ExportAudioItem) {
+  return !("muted" in item && item.muted) && getExportVolume(item.volume) > 0
+}
+
+function getItemStart(item: ExportAudioItem) {
+  return item.timelineStartSeconds
+}
+
+function getItemEnd(item: ExportAudioItem) {
+  return item.timelineStartSeconds + getClipDuration(item)
+}
+
+function rangesOverlap(
+  startA: number,
+  endA: number,
+  startB: number,
+  endB: number
+) {
+  return startA < endB && endA > startB
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function getExportVolume(volume: number) {
@@ -495,4 +1084,28 @@ function getClipPositionX(clip: { positionX?: number }) {
 
 function getClipPositionY(clip: { positionY?: number }) {
   return Math.min(100, Math.max(-100, clip.positionY ?? 0))
+}
+
+function throwIfAborted(signal: AbortSignal) {
+  if (signal.aborted) {
+    throw signal.reason ?? new DOMException("Export cancelled", "AbortError")
+  }
+}
+
+function yieldToBrowser(signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, 0)
+
+    function onAbort() {
+      window.clearTimeout(timeout)
+      reject(
+        signal.reason ?? new DOMException("Export cancelled", "AbortError")
+      )
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
 }
