@@ -750,7 +750,8 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             transition={spring.fast}
             style={{
               backgroundColor: thumbColor ?? "white",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+              boxShadow:
+                "0 1px 3px rgba(0,0,0,0.38), 0 0 0 1px rgba(0,0,0,0.1)",
               border: thumbBorderColor ? `1px solid ${thumbBorderColor}` : undefined,
             }}
           />

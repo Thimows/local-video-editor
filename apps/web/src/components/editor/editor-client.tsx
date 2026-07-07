@@ -7,6 +7,8 @@ import {
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
   IconFileDownloadFilled as Download,
+  IconMagnet as Magnet,
+  IconMagnetOff as MagnetOff,
   IconScissors as Scissors,
   IconTrash as Trash,
   IconFileUploadFilled as Upload,
@@ -54,6 +56,14 @@ import {
   getClipDuration,
   getProjectDuration,
 } from "@/lib/editor/project"
+import {
+  extractTimelineWaveform,
+  getRuntimeAssetFingerprint,
+  getTimelineItemWaveformBars,
+  type TimelineItemWaveformBars,
+  type TimelineWaveform,
+  type TimelineWaveformMap,
+} from "@/lib/editor/waveform"
 import { getProject, saveProject } from "@/lib/editor/db"
 import type {
   MusicTrack,
@@ -90,7 +100,6 @@ import {
 } from "@workspace/ui/components/ui/tabs-subtle"
 import { Tooltip } from "@workspace/ui/components/ui/tooltip"
 
-const TRACK_HEADER_WIDTH = 40
 const RULER_HEIGHT = 28
 const TIMELINE_VIEWPORT_HEIGHT = 178
 const TIMELINE_PLAYHEAD_LINE_OFFSET_PX = 0.5
@@ -99,16 +108,21 @@ const TRACK_HEIGHT = 34
 const TRACK_GAP = 5
 const TIMELINE_TRACK_TOP = RULER_HEIGHT + 10
 const SNAP_THRESHOLD_SECONDS = 1
+const SNAP_THRESHOLD_TARGET_PIXELS = 24
+const SNAP_THRESHOLD_MAX_SECONDS = 30
 const MIN_ITEM_DURATION_SECONDS = 0.2
 const PREVIEW_PRELOAD_SECONDS = 0.75
+const PREVIEW_EDGE_SAMPLE_SECONDS = 1 / 60
 const SNAP_OVERLAP_SECONDS = 0.001
 const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
 const TIMELINE_HANDLE_MIN_WIDTH = 34
 const TIMELINE_DRAG_START_THRESHOLD_PX = 3
+const TIMELINE_CONTENT_INSET_X = 36
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
+const WAVEFORM_MIN_VISIBLE_VOLUME = 0.001
 const CARD_CLASS = "rounded-xl bg-card"
 const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
 const DEFAULT_INSPECTOR_WIDTH = 320
@@ -192,6 +206,53 @@ type SourceAssetGroup = {
   assets: SourceAsset[]
 }
 
+type TimelineItemPreviewPatch =
+  | {
+      type: "clip"
+      id: string
+      patch: Partial<TimelineClip>
+    }
+  | {
+      type: "music"
+      id: string
+      patch: Partial<MusicTrack>
+    }
+
+function applyTimelineItemPreviewPatch(
+  project: Project | null,
+  preview: TimelineItemPreviewPatch | null
+) {
+  if (!project || !preview) {
+    return project
+  }
+
+  if (preview.type === "clip") {
+    let matched = false
+    const clips = project.clips.map((clip) => {
+      if (clip.id !== preview.id) {
+        return clip
+      }
+
+      matched = true
+      return { ...clip, ...preview.patch }
+    })
+
+    return matched ? { ...project, clips } : project
+  }
+
+  let matched = false
+  const musicTracks = project.musicTracks.map((track) => {
+    if (track.id !== preview.id) {
+      return track
+    }
+
+    matched = true
+    return { ...track, ...preview.patch }
+  })
+
+  return matched ? { ...project, musicTracks } : project
+}
+
 export function EditorClient() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
@@ -202,6 +263,9 @@ export function EditorClient() {
   const [inspectorView, setInspectorView] = useState<InspectorView>("project")
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const [timelineZoom, setTimelineZoom] = useState(4)
+  const [snapEnabled, setSnapEnabled] = useState(true)
+  const [timelineItemPreview, setTimelineItemPreview] =
+    useState<TimelineItemPreviewPatch | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [status, setStatus] = useState("Loading project")
   const [exportState, setExportState] = useState<{
@@ -294,6 +358,7 @@ export function EditorClient() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const isArrowKey = event.key === "ArrowLeft" || event.key === "ArrowRight"
+      const isEscapeKey = event.key === "Escape"
 
       if (
         (event.repeat && !isArrowKey) ||
@@ -301,6 +366,7 @@ export function EditorClient() {
           event.key !== " " &&
           event.key !== "Backspace" &&
           event.key !== "Delete" &&
+          !isEscapeKey &&
           !isArrowKey) ||
         event.altKey ||
         event.ctrlKey ||
@@ -328,6 +394,15 @@ export function EditorClient() {
         return
       }
 
+      if (isEscapeKey) {
+        if (selection.type === "clip" || selection.type === "music") {
+          event.preventDefault()
+          selectEditorSelection({ type: "project" })
+        }
+
+        return
+      }
+
       event.preventDefault()
       deleteSelectedTimelineItem()
     }
@@ -335,7 +410,7 @@ export function EditorClient() {
     window.addEventListener("keydown", onKeyDown)
 
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [deleteSelectedTimelineItem, project])
+  }, [deleteSelectedTimelineItem, project, selectEditorSelection, selection.type])
 
   useEffect(() => {
     saveEditorLayout({
@@ -602,8 +677,16 @@ export function EditorClient() {
             sourceEndSeconds
           )
         : findAvailableTrackIndex(timelineItems, desiredStart, sourceEndSeconds)
+      const desiredTimelineStart = snapEnabled
+        ? snapTimelineStart(
+            desiredStart,
+            sourceEndSeconds,
+            timelineItems,
+            getSnapThresholdSeconds(timelineZoom)
+          )
+        : desiredStart
       const timelineStartSeconds = findNearestNonOverlappingStart(
-        snapTimelineStart(desiredStart, sourceEndSeconds, timelineItems),
+        desiredTimelineStart,
         sourceEndSeconds,
         timelineItems.filter(
           (item) => getTrackIndex(item) === desiredTrackIndex
@@ -844,14 +927,19 @@ export function EditorClient() {
       return
     }
 
+    const timelineItems = [...project.clips, ...project.musicTracks]
+
     setProject({
       ...project,
       clips: project.clips.map((clip) =>
         clip.id === id
           ? constrainTimelineItemPatch(
               clip,
-              [...project.clips, ...project.musicTracks],
-              patch
+              timelineItems,
+              patch,
+              snapEnabled ? timelineItems : null,
+              getSnapThresholdSeconds(timelineZoom),
+              getTimelineItemSourceDuration(clip, project.sourceAssets)
             )
           : clip
       ),
@@ -864,14 +952,19 @@ export function EditorClient() {
       return
     }
 
+    const timelineItems = [...project.clips, ...project.musicTracks]
+
     setProject({
       ...project,
       musicTracks: project.musicTracks.map((track) =>
         track.id === id
           ? constrainTimelineItemPatch(
               track,
-              [...project.clips, ...project.musicTracks],
-              patch
+              timelineItems,
+              patch,
+              snapEnabled ? timelineItems : null,
+              getSnapThresholdSeconds(timelineZoom),
+              getTimelineItemSourceDuration(track, project.sourceAssets)
             )
           : track
       ),
@@ -1041,6 +1134,11 @@ export function EditorClient() {
     }
   }
 
+  const previewProject = useMemo(
+    () => applyTimelineItemPreviewPatch(project, timelineItemPreview),
+    [project, timelineItemPreview]
+  )
+
   if (!project) {
     return (
       <main className="grid min-h-svh place-items-center bg-background text-sm text-muted-foreground">
@@ -1158,7 +1256,7 @@ export function EditorClient() {
             />
           </div>
           <PreviewStage
-            project={project}
+            project={previewProject ?? project}
             runtimeAssets={runtimeAssets}
             playheadSeconds={playheadSeconds}
             isPlaying={isPlaying}
@@ -1197,6 +1295,18 @@ export function EditorClient() {
           canSplit={Boolean(selectedClip)}
           onDelete={deleteSelectedTimelineItem}
           canDelete={selection.type === "clip" || selection.type === "music"}
+          snapEnabled={snapEnabled}
+          onSnapEnabledChange={setSnapEnabled}
+          onClipPreviewChange={(id, patch) =>
+            setTimelineItemPreview(
+              patch ? { type: "clip", id, patch } : null
+            )
+          }
+          onMusicPreviewChange={(id, patch) =>
+            setTimelineItemPreview(
+              patch ? { type: "music", id, patch } : null
+            )
+          }
           onDropFiles={importTimelineDrop}
         />
       </section>
@@ -2602,6 +2712,10 @@ function Timeline({
   canSplit,
   onDelete,
   canDelete,
+  snapEnabled,
+  onSnapEnabledChange,
+  onClipPreviewChange,
+  onMusicPreviewChange,
   onDropFiles,
 }: {
   project: Project
@@ -2619,6 +2733,10 @@ function Timeline({
   canSplit: boolean
   onDelete: () => void
   canDelete: boolean
+  snapEnabled: boolean
+  onSnapEnabledChange: (enabled: boolean) => void
+  onClipPreviewChange: (id: string, patch: Partial<TimelineClip> | null) => void
+  onMusicPreviewChange: (id: string, patch: Partial<MusicTrack> | null) => void
   onDropFiles: (
     dropped: TimelineDroppedFile[],
     placement: TimelineDropPlacement
@@ -2641,16 +2759,33 @@ function Timeline({
 
     return Array.from({ length: count }, (_, index) => index * tickInterval)
   }, [duration, tickInterval])
+  const timelineShellRef = useRef<HTMLDivElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef(zoom)
   const durationRef = useRef(duration)
   const playheadSecondsRef = useRef(playheadSeconds)
+  const isSeekingRef = useRef(false)
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0)
+  const [timelineViewportWidth, setTimelineViewportWidth] = useState(0)
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
+  const [isSeeking, setIsSeeking] = useState(false)
+  const [snapPreview, setSnapPreview] = useState<TimelineSnapPreview | null>(
+    null
+  )
   const [dropPreview, setDropPreview] = useState<TimelineDropPreview | null>(
     null
   )
   const snapItems = timelineItems
+  const [waveforms, setWaveforms] = useState<TimelineWaveformMap>({})
+  const waveformsRef = useRef<TimelineWaveformMap>({})
+  const waveformMountedRef = useRef(true)
+  const waveformAssetKey = useMemo(() => {
+    return Array.from(
+      new Set(timelineItems.map((item) => item.sourceAssetId))
+    )
+      .sort()
+      .join("|")
+  }, [timelineItems])
 
   useEffect(() => {
     if (!Object.is(rawZoom, zoom)) {
@@ -2664,6 +2799,148 @@ function Timeline({
     playheadSecondsRef.current = playheadSeconds
   }, [duration, playheadSeconds, zoom])
 
+  useEffect(() => {
+    waveformsRef.current = waveforms
+  }, [waveforms])
+
+  useEffect(() => {
+    waveformMountedRef.current = true
+
+    return () => {
+      waveformMountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const assetIds = waveformAssetKey === "" ? [] : waveformAssetKey.split("|")
+    const abortControllers: AbortController[] = []
+
+    for (const assetId of assetIds) {
+      const runtimeAsset = runtimeAssets[assetId]
+
+      if (!runtimeAsset) {
+        continue
+      }
+
+      const fingerprint = getRuntimeAssetFingerprint(runtimeAsset)
+      const currentWaveform = waveformsRef.current[assetId]
+
+      if (currentWaveform?.fingerprint === fingerprint) {
+        continue
+      }
+
+      setWaveforms((current) => {
+        if (current[assetId]?.fingerprint === fingerprint) {
+          return current
+        }
+
+        const next = {
+          ...current,
+          [assetId]: {
+            status: "loading",
+            fingerprint,
+          } satisfies TimelineWaveform,
+        }
+
+        waveformsRef.current = next
+        return next
+      })
+
+      const abortController = new AbortController()
+      abortControllers.push(abortController)
+
+      extractTimelineWaveform(runtimeAsset.file, {
+        signal: abortController.signal,
+        onProgress: (waveform) => {
+          if (
+            abortController.signal.aborted ||
+            !waveformMountedRef.current
+          ) {
+            return
+          }
+
+          setWaveforms((current) => {
+            if (current[assetId]?.fingerprint !== fingerprint) {
+              return current
+            }
+
+            const next = {
+              ...current,
+              [assetId]: {
+                status: "ready",
+                fingerprint,
+                peaks: waveform.peaks,
+                durationSeconds: waveform.durationSeconds,
+                peaksPerMinute: waveform.peaksPerMinute,
+              },
+            } satisfies TimelineWaveformMap
+
+            waveformsRef.current = next
+            return next
+          })
+        },
+      })
+        .then((waveform) => {
+          if (
+            abortController.signal.aborted ||
+            !waveformMountedRef.current
+          ) {
+            return
+          }
+
+          setWaveforms((current) => {
+            if (current[assetId]?.fingerprint !== fingerprint) {
+              return current
+            }
+
+            const next = {
+              ...current,
+              [assetId]: waveform
+                ? {
+                    status: "ready",
+                    fingerprint,
+                    peaks: waveform.peaks,
+                    durationSeconds: waveform.durationSeconds,
+                    peaksPerMinute: waveform.peaksPerMinute,
+                  }
+                : { status: "unavailable", fingerprint },
+            } satisfies TimelineWaveformMap
+
+            waveformsRef.current = next
+            return next
+          })
+        })
+        .catch(() => {
+          if (
+            abortController.signal.aborted ||
+            !waveformMountedRef.current
+          ) {
+            return
+          }
+
+          setWaveforms((current) => {
+            if (current[assetId]?.fingerprint !== fingerprint) {
+              return current
+            }
+
+            const next = {
+              ...current,
+              [assetId]: { status: "unavailable", fingerprint },
+            } satisfies TimelineWaveformMap
+
+            waveformsRef.current = next
+            return next
+          })
+        })
+    }
+
+    return () => {
+      for (const abortController of abortControllers) {
+        abortController.abort()
+      }
+    }
+  }, [runtimeAssets, waveformAssetKey])
+
   function setTimelineScrollPosition(nextScrollLeft: number) {
     const normalizedScrollLeft = Math.max(0, nextScrollLeft)
 
@@ -2674,12 +2951,48 @@ function Timeline({
     )
   }
 
-  function syncTimelineScrollVariable(scrollContainer: HTMLElement) {
-    scrollContainer.style.setProperty(
-      "--timeline-scroll-left",
-      `${Math.max(0, scrollContainer.scrollLeft)}px`
+  function setTimelineViewportSize(nextViewportWidth: number) {
+    const normalizedViewportWidth = Math.max(0, nextViewportWidth)
+
+    setTimelineViewportWidth((currentViewportWidth) =>
+      Math.abs(currentViewportWidth - normalizedViewportWidth) < 0.5
+        ? currentViewportWidth
+        : normalizedViewportWidth
     )
   }
+
+  function syncTimelineScrollVariable(scrollContainer: HTMLElement) {
+    const scrollLeft = `${Math.max(0, scrollContainer.scrollLeft)}px`
+
+    scrollContainer.style.setProperty(
+      "--timeline-scroll-left",
+      scrollLeft
+    )
+    timelineShellRef.current?.style.setProperty(
+      "--timeline-scroll-left",
+      scrollLeft
+    )
+  }
+
+  useEffect(() => {
+    const container = timelineRef.current
+
+    if (!container) {
+      return
+    }
+
+    setTimelineViewportSize(container.clientWidth)
+
+    const resizeObserver = new ResizeObserver(() => {
+      setTimelineViewportSize(container.clientWidth)
+    })
+
+    resizeObserver.observe(container)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [])
 
   useEffect(() => {
     const container = timelineRef.current
@@ -2705,7 +3018,8 @@ function Timeline({
           scrollContainer,
           event.clientX,
           currentZoom,
-          currentDuration
+          currentDuration,
+          TIMELINE_CONTENT_INSET_X
         )
         const zoomFactor = Math.exp(-event.deltaY * 0.005)
         const nextZoom = clamp(
@@ -2721,7 +3035,7 @@ function Timeline({
         const roundedZoom = Number(nextZoom.toFixed(2))
         const nextScrollLeft = Math.max(
           0,
-          secondsAtCursor * roundedZoom - cursorX
+          TIMELINE_CONTENT_INSET_X + secondsAtCursor * roundedZoom - cursorX
         )
 
         zoomRef.current = roundedZoom
@@ -2768,7 +3082,10 @@ function Timeline({
 
     const anchorSeconds = playheadSecondsRef.current
     const anchorX = scrollContainer.clientWidth / 2
-    const nextScrollLeft = Math.max(0, anchorSeconds * clampedZoom - anchorX)
+    const nextScrollLeft = Math.max(
+      0,
+      TIMELINE_CONTENT_INSET_X + anchorSeconds * clampedZoom - anchorX
+    )
 
     zoomRef.current = clampedZoom
     flushSync(() => {
@@ -2784,21 +3101,42 @@ function Timeline({
       event.currentTarget,
       event.clientX,
       zoom,
-      duration
+      duration,
+      TIMELINE_CONTENT_INSET_X
     )
   }
 
   function seekFromPointer(event: PointerEvent<HTMLDivElement>) {
-    onSelect({ type: "project" })
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    isSeekingRef.current = true
+    setIsSeeking(true)
     onPlayheadChange(getSecondsFromPointer(event))
   }
 
   function updateHover(event: PointerEvent<HTMLDivElement>) {
-    setHoverSeconds(getSecondsFromPointer(event))
+    const seconds = getSecondsFromPointer(event)
+
+    setHoverSeconds(seconds)
+
+    if (isSeekingRef.current || isSeeking) {
+      event.preventDefault()
+      onPlayheadChange(seconds)
+    }
+  }
+
+  function stopSeeking() {
+    isSeekingRef.current = false
+    setIsSeeking(false)
   }
 
   function updateTimelineScroll(event: UIEvent<HTMLDivElement>) {
     syncTimelineScrollVariable(event.currentTarget)
+    setTimelineViewportSize(event.currentTarget.clientWidth)
     setTimelineScrollPosition(event.currentTarget.scrollLeft)
   }
 
@@ -2809,7 +3147,14 @@ function Timeline({
 
     event.preventDefault()
     event.stopPropagation()
-    setDropPreview(getTimelineDropPreview(event, zoom, duration))
+    setDropPreview(
+      getTimelineDropPreview(
+        event,
+        zoom,
+        duration,
+        TIMELINE_CONTENT_INSET_X
+      )
+    )
   }
 
   async function dropFilesOnTimeline(event: DragEvent<HTMLDivElement>) {
@@ -2819,7 +3164,9 @@ function Timeline({
 
     event.preventDefault()
     event.stopPropagation()
-    const preview = dropPreview ?? getTimelineDropPreview(event, zoom, duration)
+    const preview =
+      dropPreview ??
+      getTimelineDropPreview(event, zoom, duration, TIMELINE_CONTENT_INSET_X)
     const dropped = await getDroppedLocalFiles(event.dataTransfer)
 
     setDropPreview(null)
@@ -2828,6 +3175,13 @@ function Timeline({
       onDropFiles(dropped, preview.placement)
     }
   }
+
+  const timelineVisibleStartPx = timelineScrollLeft
+  const timelineVisibleEndPx =
+    timelineScrollLeft +
+    (timelineViewportWidth > 0 ? timelineViewportWidth : width)
+  const isTrimSnapPreview =
+    snapPreview?.mode === "start" || snapPreview?.mode === "end"
 
   return (
     <section className={`min-h-0 max-w-full min-w-0 ${CARD_CLASS}`}>
@@ -2869,6 +3223,32 @@ function Timeline({
               </Button>
             </span>
           </Tooltip>
+          <div className="h-5 w-px bg-border" aria-hidden="true" />
+          <Tooltip
+            content={
+              snapEnabled
+                ? "Disable timeline snapping"
+                : "Enable timeline snapping"
+            }
+          >
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                active={snapEnabled}
+                aria-label={
+                  snapEnabled
+                    ? "Disable timeline snapping"
+                    : "Enable timeline snapping"
+                }
+                aria-pressed={snapEnabled}
+                onClick={() => onSnapEnabledChange(!snapEnabled)}
+              >
+                {snapEnabled ? <Magnet /> : <MagnetOff />}
+              </Button>
+            </span>
+          </Tooltip>
         </div>
         <div className="flex w-64 shrink-0 items-center gap-2">
           <Label className="text-xs">Zoom</Label>
@@ -2889,25 +3269,20 @@ function Timeline({
       </div>
 
       <div
-        className="grid min-w-0 overflow-y-auto"
+        className="min-w-0 overflow-y-auto"
         style={{
           height: viewportHeight,
-          gridTemplateColumns: `${TRACK_HEADER_WIDTH}px minmax(0, 1fr)`,
         }}
       >
-        <div className="relative" style={{ minHeight: timelineContentHeight }}>
-          <div style={{ height: RULER_HEIGHT }} />
-          {Array.from({ length: trackCount }, (_, index) => (
-            <TrackLabel
-              key={`track-${index}`}
-              label={String(index + 1)}
-              top={getTimelineTrackTop(index)}
-            />
-          ))}
-        </div>
         <div
+          ref={timelineShellRef}
           className="relative min-w-0"
-          style={{ minHeight: timelineContentHeight }}
+          style={
+            {
+              minHeight: timelineContentHeight,
+              "--timeline-scroll-left": "0px",
+            } as CSSProperties
+          }
         >
           <div
             className="pointer-events-none sticky top-0 z-[60] overflow-hidden"
@@ -2924,7 +3299,11 @@ function Timeline({
                 <div
                   key={seconds}
                   className="absolute top-0 h-full border-l px-1 pt-1 font-mono text-[10px] text-muted-foreground"
-                  style={{ left: seconds * zoom - timelineScrollLeft }}
+                  style={{
+                    left: `calc(${
+                      TIMELINE_CONTENT_INSET_X + seconds * zoom
+                    }px - var(--timeline-scroll-left, 0px))`,
+                  }}
                 >
                   {formatDuration(seconds)}
                 </div>
@@ -2933,25 +3312,45 @@ function Timeline({
             {hoverSeconds === null ? null : (
               <div
                 className="absolute top-0 bottom-0 z-[61] w-px bg-primary/35"
-                style={{ left: hoverSeconds * zoom - timelineScrollLeft }}
+                style={{
+                  left: `calc(${
+                    TIMELINE_CONTENT_INSET_X + hoverSeconds * zoom
+                  }px - var(--timeline-scroll-left, 0px))`,
+                }}
               />
             )}
+            {snapPreview?.mode === "move" ? (
+              <div
+                className="pointer-events-none absolute top-0 bottom-0 z-[61] w-px bg-snap-orange/90"
+                style={{
+                  left: `calc(${snapPreview.left}px - var(--timeline-scroll-left, 0px))`,
+                }}
+              />
+            ) : null}
             <div
-              className="absolute top-0 bottom-0 z-[62] w-px bg-primary"
+              className={[
+                "absolute top-0 bottom-0 z-[62] w-px",
+                isTrimSnapPreview ? "bg-snap-orange" : "bg-primary",
+              ].join(" ")}
               style={{
-                left:
-                  playheadSeconds * zoom -
-                  timelineScrollLeft +
-                  TIMELINE_PLAYHEAD_LINE_OFFSET_PX,
+                left: `calc(${
+                  playheadSeconds * zoom +
+                  TIMELINE_CONTENT_INSET_X +
+                  TIMELINE_PLAYHEAD_LINE_OFFSET_PX
+                }px - var(--timeline-scroll-left, 0px))`,
               }}
             />
             <div
-              className="absolute top-1 z-[63] size-2 -translate-x-1/2 rotate-45 rounded-[2px] bg-primary"
+              className={[
+                "absolute top-1 z-[63] size-2 -translate-x-1/2 rotate-45 rounded-[2px]",
+                isTrimSnapPreview ? "bg-snap-orange" : "bg-primary",
+              ].join(" ")}
               style={{
-                left:
-                  playheadSeconds * zoom -
-                  timelineScrollLeft +
-                  TIMELINE_PLAYHEAD_CAP_OFFSET_PX,
+                left: `calc(${
+                  playheadSeconds * zoom +
+                  TIMELINE_CONTENT_INSET_X +
+                  TIMELINE_PLAYHEAD_CAP_OFFSET_PX
+                }px - var(--timeline-scroll-left, 0px))`,
               }}
             />
           </div>
@@ -2967,6 +3366,8 @@ function Timeline({
             } as CSSProperties}
             onPointerDown={seekFromPointer}
             onPointerMove={updateHover}
+            onPointerUp={stopSeeking}
+            onPointerCancel={stopSeeking}
             onPointerLeave={() => setHoverSeconds(null)}
             onScroll={updateTimelineScroll}
             onDragEnter={updateDropPreview}
@@ -2986,15 +3387,15 @@ function Timeline({
               className="relative min-h-full max-w-none"
               style={{
                 minHeight: timelineContentHeight,
-                minWidth: width,
-                width,
+                minWidth: width + TIMELINE_CONTENT_INSET_X * 2,
+                width: width + TIMELINE_CONTENT_INSET_X * 2,
               }}
             >
               {ticks.map((seconds) => (
                 <div
                   key={`grid-${seconds}`}
                   className="pointer-events-none absolute top-0 bottom-0 w-px bg-border/70"
-                  style={{ left: seconds * zoom }}
+                  style={{ left: TIMELINE_CONTENT_INSET_X + seconds * zoom }}
                 />
               ))}
               {Array.from({ length: trackCount }, (_, index) => (
@@ -3025,31 +3426,56 @@ function Timeline({
                   <TimelineItem
                     key={clip.id}
                     top={getTimelineTrackTop(trackIndex)}
-                    left={clip.timelineStartSeconds * zoom}
+                    left={
+                      TIMELINE_CONTENT_INSET_X +
+                      clip.timelineStartSeconds * zoom
+                    }
                     width={getClipDuration(clip) * zoom}
                     selected={
                       selection.type === "clip" && selection.id === clip.id
                     }
                     label={asset?.name ?? "Missing video"}
                     muted={clip.muted}
+                    waveform={waveforms[clip.sourceAssetId]}
+                    waveformVolume={clip.muted ? 0 : clip.volume}
+                    sourceStartSeconds={clip.sourceStartSeconds}
+                    sourceEndSeconds={clip.sourceEndSeconds}
+                    timelineVisibleStartPx={timelineVisibleStartPx}
+                    timelineVisibleEndPx={timelineVisibleEndPx}
                     connected={connected}
                     onSelect={() => onSelect({ type: "clip", id: clip.id })}
+                    onSnapPreviewChange={setSnapPreview}
+                    onTrimPreview={onPlayheadChange}
                     onDragPreview={(mode, deltaSeconds, deltaTracks) =>
                       getTimelineItemDragPreview(
                         clip,
                         timelineItems,
-                        snapItems,
+                        snapEnabled ? snapItems : null,
                         mode,
                         deltaSeconds,
                         deltaTracks,
                         zoom,
-                        getTimelineTrackTop
+                        getTimelineTrackTop,
+                        TIMELINE_CONTENT_INSET_X,
+                        getSnapThresholdSeconds(zoom),
+                        getTimelineItemSourceDuration(
+                          clip,
+                          project.sourceAssets
+                        )
                       )
                     }
                     onDragCommit={(preview) =>
                       onClipChange(
                         clip.id,
                         preview.patch as Partial<TimelineClip>
+                      )
+                    }
+                    onDragPreviewChange={(preview) =>
+                      onClipPreviewChange(
+                        clip.id,
+                        preview
+                          ? (preview.patch as Partial<TimelineClip>)
+                          : null
                       )
                     }
                     zoom={zoom}
@@ -3067,25 +3493,42 @@ function Timeline({
                   <TimelineItem
                     key={track.id}
                     top={getTimelineTrackTop(trackIndex)}
-                    left={track.timelineStartSeconds * zoom}
+                    left={
+                      TIMELINE_CONTENT_INSET_X +
+                      track.timelineStartSeconds * zoom
+                    }
                     width={getClipDuration(track) * zoom}
                     selected={
                       selection.type === "music" && selection.id === track.id
                     }
                     label={asset?.name ?? "Missing audio"}
                     muted={false}
+                    waveform={waveforms[track.sourceAssetId]}
+                    waveformVolume={track.volume}
+                    sourceStartSeconds={track.sourceStartSeconds}
+                    sourceEndSeconds={track.sourceEndSeconds}
+                    timelineVisibleStartPx={timelineVisibleStartPx}
+                    timelineVisibleEndPx={timelineVisibleEndPx}
                     connected={connected}
                     onSelect={() => onSelect({ type: "music", id: track.id })}
+                    onSnapPreviewChange={setSnapPreview}
+                    onTrimPreview={onPlayheadChange}
                     onDragPreview={(mode, deltaSeconds, deltaTracks) =>
                       getTimelineItemDragPreview(
                         track,
                         timelineItems,
-                        snapItems,
+                        snapEnabled ? snapItems : null,
                         mode,
                         deltaSeconds,
                         deltaTracks,
                         zoom,
-                        getTimelineTrackTop
+                        getTimelineTrackTop,
+                        TIMELINE_CONTENT_INSET_X,
+                        getSnapThresholdSeconds(zoom),
+                        getTimelineItemSourceDuration(
+                          track,
+                          project.sourceAssets
+                        )
                       )
                     }
                     onDragCommit={(preview) =>
@@ -3094,12 +3537,28 @@ function Timeline({
                         preview.patch as Partial<MusicTrack>
                       )
                     }
+                    onDragPreviewChange={(preview) =>
+                      onMusicPreviewChange(
+                        track.id,
+                        preview
+                          ? (preview.patch as Partial<MusicTrack>)
+                          : null
+                      )
+                    }
                     zoom={zoom}
                   />
                 )
               })}
             </div>
           </div>
+          <div
+            className="pointer-events-none absolute inset-y-0 left-0 z-[70] w-8 bg-gradient-to-r from-card to-transparent"
+            aria-hidden="true"
+          />
+          <div
+            className="pointer-events-none absolute inset-y-0 right-0 z-[70] w-8 bg-gradient-to-l from-card to-transparent"
+            aria-hidden="true"
+          />
         </div>
       </div>
     </section>
@@ -3113,11 +3572,20 @@ function TimelineItem({
   selected,
   label,
   muted,
+  waveform,
+  waveformVolume,
+  sourceStartSeconds,
+  sourceEndSeconds,
+  timelineVisibleStartPx,
+  timelineVisibleEndPx,
   connected,
   zoom,
   onSelect,
+  onSnapPreviewChange,
+  onTrimPreview,
   onDragPreview,
   onDragCommit,
+  onDragPreviewChange,
 }: {
   top: number
   left: number
@@ -3125,15 +3593,24 @@ function TimelineItem({
   selected: boolean
   label: string
   muted: boolean
+  waveform?: TimelineWaveform
+  waveformVolume: number
+  sourceStartSeconds: number
+  sourceEndSeconds: number
+  timelineVisibleStartPx: number
+  timelineVisibleEndPx: number
   connected: boolean
   zoom: number
   onSelect: () => void
+  onSnapPreviewChange: (preview: TimelineSnapPreview | null) => void
+  onTrimPreview: (seconds: number) => void
   onDragPreview: (
     mode: TimelineDragMode,
     deltaSeconds: number,
     deltaTracks: number
   ) => TimelineItemDragPreview
   onDragCommit: (preview: TimelineItemDragPreview) => void
+  onDragPreviewChange: (preview: TimelineItemDragPreview | null) => void
 }) {
   const dragRef = useRef<{
     x: number
@@ -3147,13 +3624,34 @@ function TimelineItem({
   const showHandles = stylePreview.width >= TIMELINE_HANDLE_MIN_WIDTH
   const leadingInset = showHandles ? 16 : 10
   const trailingInset = muted ? 24 : leadingInset
+  const previewSourceStartSeconds =
+    typeof preview?.patch.sourceStartSeconds === "number"
+      ? preview.patch.sourceStartSeconds
+      : sourceStartSeconds
+  const previewSourceEndSeconds =
+    typeof preview?.patch.sourceEndSeconds === "number"
+      ? preview.patch.sourceEndSeconds
+      : sourceEndSeconds
+  const waveformBars =
+    waveform?.status === "ready"
+      ? getTimelineItemWaveformBars({
+          peaks: waveform.peaks,
+          durationSeconds: waveform.durationSeconds,
+          sourceStartSeconds: previewSourceStartSeconds,
+          sourceEndSeconds: previewSourceEndSeconds,
+          width: stylePreview.width,
+          zoom,
+          visibleStartPx: timelineVisibleStartPx - stylePreview.left,
+          visibleEndPx: timelineVisibleEndPx - stylePreview.left,
+        })
+      : { totalBars: 0, bars: [] }
   const labelViewportWidth = Math.max(
     0,
     stylePreview.width - leadingInset - trailingInset
   )
   const maxLabelOffset = Math.max(0, labelViewportWidth - 24)
   const handleClassName = [
-    "absolute top-1/2 z-10 h-5 w-1 -translate-y-1/2 cursor-ew-resize rounded-full",
+    "absolute top-1/2 z-30 h-5 w-1 -translate-y-1/2 cursor-ew-resize rounded-full",
     selected ? "bg-primary-foreground/80" : "bg-foreground/25",
   ].join(" ")
 
@@ -3202,12 +3700,20 @@ function TimelineItem({
 
     previewRef.current = nextPreview
     setPreview(nextPreview)
+    onDragPreviewChange(nextPreview)
+    onSnapPreviewChange(nextPreview.snapPreview ?? null)
+
+    if (nextPreview.trimPlayheadSeconds !== undefined) {
+      onTrimPreview(nextPreview.trimPlayheadSeconds)
+    }
   }
 
   function resetDrag() {
     previewRef.current = null
     dragRef.current = null
     setPreview(null)
+    onDragPreviewChange(null)
+    onSnapPreviewChange(null)
   }
 
   function endDrag(event: PointerEvent<HTMLDivElement>) {
@@ -3241,6 +3747,11 @@ function TimelineItem({
       onPointerUp={endDrag}
       onPointerCancel={resetDrag}
     >
+      <TimelineWaveform
+        waveform={waveformBars}
+        volume={waveformVolume}
+        selected={selected}
+      />
       {showHandles ? (
         <div
           className={`${handleClassName} left-1`}
@@ -3248,7 +3759,7 @@ function TimelineItem({
         />
       ) : null}
       <div
-        className="pointer-events-none absolute top-0 bottom-0 overflow-hidden"
+        className="pointer-events-none absolute top-0 bottom-0 z-20 overflow-hidden"
         style={{
           left: leadingInset,
           right: trailingInset,
@@ -3263,11 +3774,18 @@ function TimelineItem({
           }}
           title={label}
         >
-          <span className="block min-w-0 truncate">{label}</span>
+          <span
+            className={[
+              "block min-w-0 max-w-full truncate rounded px-1 py-0.5",
+              selected ? "bg-primary" : "bg-background",
+            ].join(" ")}
+          >
+            {label}
+          </span>
         </span>
       </div>
       {muted ? (
-        <VolumeX className="absolute top-1/2 right-2 size-3 -translate-y-1/2" />
+        <VolumeX className="absolute top-1/2 right-2 z-20 size-3 -translate-y-1/2" />
       ) : null}
       {showHandles ? (
         <div
@@ -3275,6 +3793,62 @@ function TimelineItem({
           onPointerDown={(event) => startDrag(event, "end")}
         />
       ) : null}
+    </div>
+  )
+}
+
+function TimelineWaveform({
+  waveform,
+  volume,
+  selected,
+}: {
+  waveform: TimelineItemWaveformBars
+  volume: number
+  selected: boolean
+}) {
+  const volumeScale = clamp(volume, 0, MAX_MEDIA_VOLUME)
+  const waveformPath = useMemo(() => {
+    return waveform.bars
+      .map(({ index, peak }) => {
+        const normalizedPeak = clamp(peak * volumeScale, 0, 1)
+        const halfHeight = Math.max(1, normalizedPeak * 48)
+        const x = index + 0.5
+
+        return `M${x} ${50 - halfHeight}V${50 + halfHeight}`
+      })
+      .join(" ")
+  }, [volumeScale, waveform.bars])
+
+  if (
+    volumeScale <= WAVEFORM_MIN_VISIBLE_VOLUME ||
+    waveform.totalBars === 0 ||
+    waveform.bars.length === 0
+  ) {
+    return null
+  }
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-2 top-1/2 z-0 h-[calc(100%-12px)] -translate-y-1/2 opacity-85"
+      aria-hidden="true"
+    >
+      <svg
+        className="size-full"
+        viewBox={`0 0 ${waveform.totalBars} 100`}
+        preserveAspectRatio="none"
+      >
+        <path
+          className={
+            selected
+              ? "stroke-primary-foreground/55"
+              : "stroke-muted-foreground/45 dark:stroke-muted-foreground/60"
+          }
+          d={waveformPath}
+          fill="none"
+          strokeLinecap="round"
+          strokeWidth="1"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
     </div>
   )
 }
@@ -3293,19 +3867,6 @@ function isPointerInsideTimelineDropZone(event: PointerEvent<HTMLElement>) {
     event.clientX <= rect.right &&
     event.clientY >= rect.top &&
     event.clientY <= rect.bottom
-  )
-}
-
-function TrackLabel({ label, top }: { label: string; top: number }) {
-  return (
-    <div
-      className="absolute inset-x-0 z-20 grid h-5 place-items-center text-[10px] font-medium text-muted-foreground"
-      style={{ top: top + (TRACK_HEIGHT - 20) / 2 }}
-      aria-label={label}
-      title={label}
-    >
-      {label}
-    </div>
   )
 }
 
@@ -3512,7 +4073,13 @@ type TimelineItemDragPreview = {
   top: number
   left: number
   width: number
+  snapPreview?: TimelineSnapPreview
+  trimPlayheadSeconds?: number
   patch: Partial<TimelineItemData>
+}
+type TimelineSnapPreview = {
+  left: number
+  mode: TimelineDragMode
 }
 
 function getTrackIndex(item: { trackIndex?: number }) {
@@ -3526,6 +4093,16 @@ function getTrackCount(items: { trackIndex?: number }[]) {
   )
 }
 
+function getTimelineItemSourceDuration(
+  item: TimelineItemData,
+  sourceAssets: SourceAsset[]
+) {
+  return (
+    sourceAssets.find((asset) => asset.id === item.sourceAssetId)
+      ?.durationSeconds ?? item.sourceEndSeconds
+  )
+}
+
 function getTimelineTrackTop(trackIndex: number) {
   return TIMELINE_TRACK_TOP + trackIndex * (TRACK_HEIGHT + TRACK_GAP)
 }
@@ -3533,7 +4110,8 @@ function getTimelineTrackTop(trackIndex: number) {
 function getTimelineDropPreview(
   event: DragEvent<HTMLDivElement>,
   zoom: number,
-  duration: number
+  duration: number,
+  contentInsetX: number
 ): TimelineDropPreview {
   const container = event.currentTarget
   const rect = container.getBoundingClientRect()
@@ -3542,7 +4120,8 @@ function getTimelineDropPreview(
     container,
     event.clientX,
     zoom,
-    duration
+    duration,
+    contentInsetX
   )
   const trackIndex = Math.max(
     0,
@@ -3551,7 +4130,7 @@ function getTimelineDropPreview(
 
   return {
     top: getTimelineTrackTop(trackIndex),
-    left: timelineStartSeconds * zoom,
+    left: contentInsetX + timelineStartSeconds * zoom,
     width: Math.max(72, 5 * zoom),
     placement: {
       timelineStartSeconds,
@@ -3567,20 +4146,58 @@ function hasDraggedFiles(dataTransfer: DataTransfer) {
 function getTimelineItemDragPreview<T extends TimelineItemData>(
   item: T,
   laneItems: TimelineItemData[],
-  snapItems: TimelineItemData[],
+  snapItems: TimelineItemData[] | null,
   mode: TimelineDragMode,
   deltaSeconds: number,
   deltaTracks: number,
   zoom: number,
-  getTop: (trackIndex: number) => number
+  getTop: (trackIndex: number) => number,
+  contentInsetX: number,
+  snapThresholdSeconds: number,
+  sourceDurationSeconds: number
 ): TimelineItemDragPreview {
-  const patch = getTimelineDragPatch(item, mode, deltaSeconds, deltaTracks)
-  const next = constrainTimelineItemPatch(item, laneItems, patch, snapItems)
+  const patch = getTimelineDragPatch(
+    item,
+    mode,
+    deltaSeconds,
+    deltaTracks,
+    sourceDurationSeconds
+  )
+  const next = constrainTimelineItemPatch(
+    item,
+    laneItems,
+    patch,
+    snapItems,
+    snapThresholdSeconds,
+    sourceDurationSeconds
+  )
+  const duration = getClipDuration(next)
+  const snapGuideSeconds = snapItems
+    ? getTimelineSnapGuideSeconds(
+        next,
+        snapItems.filter((candidate) => candidate.id !== item.id),
+        mode,
+        snapThresholdSeconds
+      )
+    : null
 
   return {
     top: getTop(getTrackIndex(next)),
-    left: next.timelineStartSeconds * zoom,
-    width: getClipDuration(next) * zoom,
+    left: contentInsetX + next.timelineStartSeconds * zoom,
+    width: duration * zoom,
+    snapPreview:
+      snapGuideSeconds === null
+        ? undefined
+        : {
+            left: contentInsetX + snapGuideSeconds * zoom,
+            mode,
+          },
+    trimPlayheadSeconds:
+      mode === "start"
+        ? next.timelineStartSeconds
+        : mode === "end"
+          ? next.timelineStartSeconds + duration
+          : undefined,
     patch: getTimelineCommitPatch(next, mode),
   }
 }
@@ -3589,7 +4206,8 @@ function getTimelineDragPatch<T extends TimelineItemData>(
   item: T,
   mode: TimelineDragMode,
   deltaSeconds: number,
-  deltaTracks: number
+  deltaTracks: number,
+  sourceDurationSeconds: number
 ): Partial<T> {
   if (mode === "move") {
     return {
@@ -3602,22 +4220,33 @@ function getTimelineDragPatch<T extends TimelineItemData>(
   }
 
   if (mode === "start") {
+    const desiredSourceStart = clamp(
+      item.sourceStartSeconds + deltaSeconds,
+      0,
+      item.sourceEndSeconds - MIN_ITEM_DURATION_SECONDS
+    )
+    const desiredSourceDelta = desiredSourceStart - item.sourceStartSeconds
+    const sourceDelta = Math.max(
+      -item.timelineStartSeconds,
+      desiredSourceDelta
+    )
+
     return {
-      sourceStartSeconds: Math.min(
-        item.sourceStartSeconds + deltaSeconds,
-        item.sourceEndSeconds - MIN_ITEM_DURATION_SECONDS
-      ),
-      timelineStartSeconds: Math.max(
-        0,
-        item.timelineStartSeconds + deltaSeconds
-      ),
+      sourceStartSeconds: item.sourceStartSeconds + sourceDelta,
+      timelineStartSeconds: item.timelineStartSeconds + sourceDelta,
     } as Partial<T>
   }
 
+  const sourceDuration = Math.max(
+    MIN_ITEM_DURATION_SECONDS,
+    sourceDurationSeconds
+  )
+
   return {
-    sourceEndSeconds: Math.max(
+    sourceEndSeconds: clamp(
+      item.sourceEndSeconds + deltaSeconds,
       item.sourceStartSeconds + MIN_ITEM_DURATION_SECONDS,
-      item.sourceEndSeconds + deltaSeconds
+      sourceDuration
     ),
   } as Partial<T>
 }
@@ -3716,11 +4345,32 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
   item: T,
   items: TimelineItemData[],
   patch: Partial<T>,
-  snapItems: TimelineItemData[] = items
+  snapItems: TimelineItemData[] | null = items,
+  snapThresholdSeconds = SNAP_THRESHOLD_SECONDS,
+  sourceDurationSeconds?: number
 ): T {
+  const sourceDuration = Math.max(
+    MIN_ITEM_DURATION_SECONDS,
+    sourceDurationSeconds ?? item.sourceEndSeconds
+  )
+  const patchedSourceStart =
+    patch.sourceStartSeconds ?? item.sourceStartSeconds
+  const safeSourceStart = clamp(
+    patchedSourceStart,
+    0,
+    sourceDuration - MIN_ITEM_DURATION_SECONDS
+  )
+  const patchedSourceEnd = patch.sourceEndSeconds ?? item.sourceEndSeconds
+  const safeSourceEnd = clamp(
+    patchedSourceEnd,
+    safeSourceStart + MIN_ITEM_DURATION_SECONDS,
+    sourceDuration
+  )
   const next = {
     ...item,
     ...patch,
+    sourceStartSeconds: safeSourceStart,
+    sourceEndSeconds: safeSourceEnd,
     trackIndex: Math.max(
       0,
       Math.round(patch.trackIndex ?? item.trackIndex ?? 0)
@@ -3739,11 +4389,15 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
 
   if (isMove) {
     const duration = getClipDuration(next)
-    const snappedStart = snapTimelineStart(
-      Math.max(0, next.timelineStartSeconds),
-      duration,
-      snapItems.filter((candidate) => candidate.id !== item.id)
-    )
+    const desiredStart = Math.max(0, next.timelineStartSeconds)
+    const snappedStart = snapItems
+      ? snapTimelineStart(
+          desiredStart,
+          duration,
+          snapItems.filter((candidate) => candidate.id !== item.id),
+          snapThresholdSeconds
+        )
+      : normalizeTimelineSeconds(desiredStart)
 
     return {
       ...next,
@@ -3759,18 +4413,29 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
     const fixedEnd = item.timelineStartSeconds + getClipDuration(item)
     const nextItemStart = getNextItemStart(laneItems, fixedEnd)
     const maxEnd = nextItemStart ?? fixedEnd
-    const desiredStart = snapPoint(Math.max(0, next.timelineStartSeconds), [
+    const start = Math.max(0, next.timelineStartSeconds)
+    const minStartFromSource = Math.max(
       0,
-      ...snapItems
-        .filter((candidate) => candidate.id !== item.id)
-        .flatMap((snapItem) => [
-          snapItem.timelineStartSeconds,
-          snapItem.timelineStartSeconds + getClipDuration(snapItem),
-        ]),
-    ])
+      item.timelineStartSeconds - item.sourceStartSeconds
+    )
+    const desiredStart = snapItems
+      ? snapPoint(
+          start,
+          [
+            0,
+            ...snapItems
+              .filter((candidate) => candidate.id !== item.id)
+              .flatMap((snapItem) => [
+                snapItem.timelineStartSeconds,
+                snapItem.timelineStartSeconds + getClipDuration(snapItem),
+              ]),
+          ],
+          snapThresholdSeconds
+        )
+      : normalizeTimelineSeconds(start)
     const clampedStart = clamp(
       desiredStart,
-      getPreviousItemEnd(laneItems, fixedEnd),
+      Math.max(getPreviousItemEnd(laneItems, fixedEnd), minStartFromSource),
       Math.min(fixedEnd - MIN_ITEM_DURATION_SECONDS, maxEnd)
     )
     const normalizedStart = normalizeTimelineSeconds(clampedStart)
@@ -3779,21 +4444,37 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
     return {
       ...next,
       timelineStartSeconds: normalizedStart,
-      sourceStartSeconds: next.sourceEndSeconds - duration,
+      sourceStartSeconds: normalizeTimelineSeconds(
+        clamp(
+          next.sourceEndSeconds - duration,
+          0,
+          next.sourceEndSeconds - MIN_ITEM_DURATION_SECONDS
+        )
+      ),
     }
   }
 
   if (isTrimEnd) {
     const start = next.timelineStartSeconds
-    const maxEnd = getNextItemStart(laneItems, start) ?? Infinity
-    const desiredEnd = snapPoint(start + getClipDuration(next), [
-      ...snapItems
-        .filter((candidate) => candidate.id !== item.id)
-        .flatMap((snapItem) => [
-          snapItem.timelineStartSeconds,
-          snapItem.timelineStartSeconds + getClipDuration(snapItem),
-        ]),
-    ])
+    const maxEnd = Math.min(
+      getNextItemStart(laneItems, start) ?? Infinity,
+      start + sourceDuration - next.sourceStartSeconds
+    )
+    const end = start + getClipDuration(next)
+    const desiredEnd = snapItems
+      ? snapPoint(
+          end,
+          [
+            ...snapItems
+              .filter((candidate) => candidate.id !== item.id)
+              .flatMap((snapItem) => [
+                snapItem.timelineStartSeconds,
+                snapItem.timelineStartSeconds + getClipDuration(snapItem),
+              ]),
+          ],
+          snapThresholdSeconds
+        )
+      : normalizeTimelineSeconds(end)
     const clampedEnd = clamp(
       desiredEnd,
       start + MIN_ITEM_DURATION_SECONDS,
@@ -3803,7 +4484,14 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
     return {
       ...next,
       sourceEndSeconds:
-        next.sourceStartSeconds + normalizeTimelineSeconds(clampedEnd - start),
+        next.sourceStartSeconds +
+        normalizeTimelineSeconds(
+          clamp(
+            clampedEnd - start,
+            MIN_ITEM_DURATION_SECONDS,
+            sourceDuration - next.sourceStartSeconds
+          )
+        ),
     }
   }
 
@@ -3813,7 +4501,8 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
 function snapTimelineStart(
   startSeconds: number,
   durationSeconds: number,
-  laneItems: TimelineItemData[]
+  laneItems: TimelineItemData[],
+  snapThresholdSeconds = SNAP_THRESHOLD_SECONDS
 ) {
   const endSeconds = startSeconds + durationSeconds
   const points = [
@@ -3823,24 +4512,28 @@ function snapTimelineStart(
       item.timelineStartSeconds + getClipDuration(item),
     ]),
   ]
-  const snappedStart = snapPoint(startSeconds, points)
+  const snappedStart = snapPoint(startSeconds, points, snapThresholdSeconds)
 
-  if (snappedStart !== startSeconds) {
+  if (Math.abs(snappedStart - startSeconds) > TIMELINE_EPSILON_SECONDS) {
     return normalizeTimelineSeconds(snappedStart)
   }
 
-  const snappedEnd = snapPoint(endSeconds, points)
+  const snappedEnd = snapPoint(endSeconds, points, snapThresholdSeconds)
 
   return normalizeTimelineSeconds(
-    snappedEnd === endSeconds
+    Math.abs(snappedEnd - endSeconds) <= TIMELINE_EPSILON_SECONDS
       ? startSeconds
       : snappedEnd - durationSeconds - SNAP_OVERLAP_SECONDS
   )
 }
 
-function snapPoint(value: number, points: number[]) {
+function snapPoint(
+  value: number,
+  points: number[],
+  snapThresholdSeconds = SNAP_THRESHOLD_SECONDS
+) {
   let nearest = value
-  let nearestDistance = SNAP_THRESHOLD_SECONDS
+  let nearestDistance = snapThresholdSeconds
 
   for (const point of points) {
     const distance = Math.abs(value - point)
@@ -3852,6 +4545,51 @@ function snapPoint(value: number, points: number[]) {
   }
 
   return normalizeTimelineSeconds(Math.max(0, nearest))
+}
+
+function getSnapThresholdSeconds(zoom: number) {
+  return clamp(
+    SNAP_THRESHOLD_TARGET_PIXELS / Math.max(zoom, 0.001),
+    SNAP_THRESHOLD_SECONDS,
+    SNAP_THRESHOLD_MAX_SECONDS
+  )
+}
+
+function getTimelineSnapGuideSeconds(
+  item: TimelineItemData,
+  snapItems: TimelineItemData[],
+  mode: TimelineDragMode,
+  snapThresholdSeconds: number
+) {
+  const duration = getClipDuration(item)
+  const points = [
+    0,
+    ...snapItems.flatMap((snapItem) => [
+      snapItem.timelineStartSeconds,
+      snapItem.timelineStartSeconds + getClipDuration(snapItem),
+    ]),
+  ]
+  const edges =
+    mode === "start"
+      ? [item.timelineStartSeconds]
+      : mode === "end"
+        ? [item.timelineStartSeconds + duration]
+        : [item.timelineStartSeconds, item.timelineStartSeconds + duration]
+  let nearestPoint: number | null = null
+  let nearestDistance = snapThresholdSeconds + TIMELINE_EPSILON_SECONDS
+
+  for (const edge of edges) {
+    for (const point of points) {
+      const distance = Math.abs(edge - point)
+
+      if (distance <= nearestDistance) {
+        nearestPoint = point
+        nearestDistance = distance
+      }
+    }
+  }
+
+  return nearestPoint === null ? null : normalizeTimelineSeconds(nearestPoint)
 }
 
 function findNearestNonOverlappingStart(
@@ -3989,7 +4727,13 @@ function getSourceTimeForTimelineItem(
     getClipDuration(item)
   )
 
-  return item.sourceStartSeconds + itemOffset
+  const sourceTime = item.sourceStartSeconds + itemOffset
+  const maxPreviewSourceTime = Math.max(
+    item.sourceStartSeconds,
+    item.sourceEndSeconds - PREVIEW_EDGE_SAMPLE_SECONDS
+  )
+
+  return clamp(sourceTime, item.sourceStartSeconds, maxPreviewSourceTime)
 }
 
 function waitForMediaMetadata(media: HTMLMediaElement) {
@@ -4048,12 +4792,13 @@ function getTimelineSeconds(
   container: HTMLDivElement,
   clientX: number,
   zoom: number,
-  duration: number
+  duration: number,
+  contentInsetX = 0
 ) {
   const rect = container.getBoundingClientRect()
   const x = clientX - rect.left + container.scrollLeft
 
-  return clamp(x / zoom, 0, duration)
+  return clamp((x - contentInsetX) / zoom, 0, duration)
 }
 
 function getSliderValue(value: number | readonly number[], fallback: number) {
