@@ -70,8 +70,12 @@ const RULER_HEIGHT = 28
 const TRACK_HEIGHT = 42
 const TRACK_GAP = 8
 const VIDEO_TRACK_TOP = RULER_HEIGHT + 10
-const SNAP_THRESHOLD_SECONDS = 0.35
+const SNAP_THRESHOLD_SECONDS = 1
 const MIN_ITEM_DURATION_SECONDS = 0.2
+const PREVIEW_PRELOAD_SECONDS = 0.75
+const SNAP_OVERLAP_SECONDS = 0.001
+const TIMELINE_EPSILON_SECONDS = 1 / 120
+const TIMELINE_PRECISION_SECONDS = 1_000
 const CARD_CLASS = "rounded-lg bg-card"
 
 export function EditorClient() {
@@ -330,8 +334,16 @@ export function EditorClient() {
           desiredStart,
           sourceEndSeconds
         )
+        const videoItems = [...project.clips, ...importedClips]
         const desiredTrackIndex =
-          placement?.kind === "video" ? placement.trackIndex : trackIndex
+          placement?.kind === "video"
+            ? findNearestAvailableTrackIndex(
+                videoItems,
+                placement.trackIndex,
+                desiredStart,
+                sourceEndSeconds
+              )
+            : trackIndex
         const timelineStartSeconds = findNearestNonOverlappingStart(
           snapTimelineStart(desiredStart, sourceEndSeconds, [
             ...project.clips,
@@ -340,9 +352,7 @@ export function EditorClient() {
             ...importedTracks,
           ]),
           sourceEndSeconds,
-          [...project.clips, ...importedClips].filter(
-            (item) => getTrackIndex(item) === desiredTrackIndex
-          )
+          videoItems.filter((item) => getTrackIndex(item) === desiredTrackIndex)
         )
 
         importedClips.push({
@@ -367,8 +377,16 @@ export function EditorClient() {
           desiredStart,
           sourceEndSeconds
         )
+        const audioItems = [...project.musicTracks, ...importedTracks]
         const desiredTrackIndex =
-          placement?.kind === "audio" ? placement.trackIndex : trackIndex
+          placement?.kind === "audio"
+            ? findNearestAvailableTrackIndex(
+                audioItems,
+                placement.trackIndex,
+                desiredStart,
+                sourceEndSeconds
+              )
+            : trackIndex
         const timelineStartSeconds = findNearestNonOverlappingStart(
           snapTimelineStart(desiredStart, sourceEndSeconds, [
             ...project.clips,
@@ -377,9 +395,7 @@ export function EditorClient() {
             ...importedTracks,
           ]),
           sourceEndSeconds,
-          [...project.musicTracks, ...importedTracks].filter(
-            (item) => getTrackIndex(item) === desiredTrackIndex
-          )
+          audioItems.filter((item) => getTrackIndex(item) === desiredTrackIndex)
         )
 
         importedTracks.push({
@@ -1176,30 +1192,55 @@ function PreviewStage({
   onPlayChange: (isPlaying: boolean) => void
   onPlayheadChange: (seconds: number) => void
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const activeObjectUrlRef = useRef<string | null>(null)
   const playheadRef = useRef(playheadSeconds)
   const playbackClockRef = useRef<{
     playheadSeconds: number
     startedAt: number
   } | null>(null)
   const generatedPlayheadRef = useRef<number | null>(null)
-  const [previewIssue, setPreviewIssue] = useState<string | null>(null)
+  const [previewIssues, setPreviewIssues] = useState<Record<string, string>>({})
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
-        (a, b) => a.timelineStartSeconds - b.timelineStartSeconds
+        (a, b) =>
+          getTrackIndex(b) - getTrackIndex(a) ||
+          a.timelineStartSeconds - b.timelineStartSeconds
       ),
     [project.clips]
   )
-  const clipAtPlayhead = findClipAtTime(sortedClips, playheadSeconds)
-  const activeClip = clipAtPlayhead
-  const runtimeAsset = activeClip
-    ? runtimeAssets[activeClip.sourceAssetId]
-    : undefined
-  const hasPlayableClip = sortedClips.some(
+  const sortedMusicTracks = useMemo(
+    () =>
+      [...project.musicTracks].sort(
+        (a, b) =>
+          getTrackIndex(b) - getTrackIndex(a) ||
+          a.timelineStartSeconds - b.timelineStartSeconds
+      ),
+    [project.musicTracks]
+  )
+  const activeClips = useMemo(
+    () => findTimelineItemsAtTime(sortedClips, playheadSeconds),
+    [playheadSeconds, sortedClips]
+  )
+  const previewClips = useMemo(
+    () =>
+      findTimelineItemsNearTime(
+        sortedClips,
+        playheadSeconds,
+        PREVIEW_PRELOAD_SECONDS
+      ),
+    [playheadSeconds, sortedClips]
+  )
+  const activeMusicTracks = useMemo(
+    () => findTimelineItemsAtTime(sortedMusicTracks, playheadSeconds),
+    [playheadSeconds, sortedMusicTracks]
+  )
+  const hasPlayableMedia =
+    sortedClips.some((clip) => runtimeAssets[clip.sourceAssetId]) ||
+    sortedMusicTracks.some((track) => runtimeAssets[track.sourceAssetId])
+  const hasActiveVideo = activeClips.some(
     (clip) => runtimeAssets[clip.sourceAssetId]
   )
+  const activeClipIds = new Set(activeClips.map((clip) => clip.id))
   const projectDuration = getProjectDuration(project)
 
   useEffect(() => {
@@ -1224,153 +1265,19 @@ function PreviewStage({
       playheadSeconds,
       startedAt: performance.now(),
     }
-
-    const video = videoRef.current
-
-    if (
-      video &&
-      activeClip &&
-      runtimeAsset &&
-      video.readyState >= HTMLMediaElement.HAVE_METADATA
-    ) {
-      video.currentTime = getSourceTimeForPlayhead(activeClip, playheadSeconds)
-    }
-  }, [activeClip, isPlaying, playheadSeconds, runtimeAsset])
+  }, [isPlaying, playheadSeconds])
 
   useEffect(() => {
-    const video = videoRef.current
-
-    if (!video || !activeClip || !runtimeAsset) {
+    if (!isPlaying) {
       return
     }
 
-    if (isPlaying) {
-      return
-    }
-
-    const player = video
-    const clip = activeClip
-    const asset = runtimeAsset
-    const targetTime = getSourceTimeForPlayhead(clip, playheadSeconds)
-    let cancelled = false
-
-    async function syncVideo() {
-      if (activeObjectUrlRef.current !== asset.objectUrl) {
-        player.src = asset.objectUrl
-        activeObjectUrlRef.current = asset.objectUrl
-        await waitForVideoMetadata(player)
-      }
-
-      if (cancelled) {
-        return
-      }
-
-      player.volume = clip.muted ? 0 : clip.volume
-
-      if (Number.isFinite(targetTime)) {
-        player.currentTime = targetTime
-        await waitForVideoSeek(player)
-      }
-
-      if (player.videoWidth === 0 || player.videoHeight === 0) {
-        setPreviewIssue(
-          "The audio can play, but this browser is not exposing a decodable video track for this file."
-        )
-      } else {
-        setPreviewIssue(null)
-      }
-    }
-
-    syncVideo().catch(() => undefined)
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeClip, isPlaying, playheadSeconds, runtimeAsset])
-
-  useEffect(() => {
-    const video = videoRef.current
-
-    if (!video || !activeClip || !runtimeAsset) {
-      if (isPlaying) {
-        playbackClockRef.current = {
-          playheadSeconds: playheadRef.current,
-          startedAt: performance.now(),
-        }
-        let frame = 0
-        let lastTimelineUpdate = 0
-
-        function tickGap() {
-          const clock = playbackClockRef.current ?? {
-            playheadSeconds: playheadRef.current,
-            startedAt: performance.now(),
-          }
-          playbackClockRef.current = clock
-          const elapsedSeconds = (performance.now() - clock.startedAt) / 1000
-          const nextPlayhead = clamp(
-            clock.playheadSeconds + elapsedSeconds,
-            0,
-            projectDuration
-          )
-          const now = performance.now()
-
-          if (now - lastTimelineUpdate > 16) {
-            lastTimelineUpdate = now
-            generatedPlayheadRef.current = nextPlayhead
-            onPlayheadChange(nextPlayhead)
-          }
-
-          if (nextPlayhead >= projectDuration) {
-            onPlayChange(false)
-            return
-          }
-
-          frame = requestAnimationFrame(tickGap)
-        }
-
-        frame = requestAnimationFrame(tickGap)
-
-        return () => cancelAnimationFrame(frame)
-      }
-      return
-    }
-
-    const player = video
-    const clip = activeClip
-    const asset = runtimeAsset
     playbackClockRef.current = {
       playheadSeconds: playheadRef.current,
       startedAt: performance.now(),
     }
-    let cancelled = false
     let frame = 0
     let lastTimelineUpdate = 0
-
-    async function syncPlayback() {
-      if (isPlaying) {
-        if (activeObjectUrlRef.current !== asset.objectUrl) {
-          player.src = asset.objectUrl
-          activeObjectUrlRef.current = asset.objectUrl
-          await waitForVideoMetadata(player)
-        }
-
-        if (cancelled) {
-          return
-        }
-
-        player.volume = clip.muted ? 0 : clip.volume
-        player.currentTime = getSourceTimeForPlayhead(clip, playheadRef.current)
-        await waitForVideoSeek(player)
-        setPreviewIssue(
-          player.videoWidth === 0 || player.videoHeight === 0
-            ? "The audio can play, but this browser is not exposing a decodable video track for this file."
-            : null
-        )
-        await player.play().catch(() => undefined)
-      } else {
-        player.pause()
-      }
-    }
 
     function tick() {
       const clock = playbackClockRef.current ?? {
@@ -1400,25 +1307,37 @@ function PreviewStage({
       frame = requestAnimationFrame(tick)
     }
 
-    syncPlayback()
-
-    if (isPlaying) {
-      frame = requestAnimationFrame(tick)
-    }
+    frame = requestAnimationFrame(tick)
 
     return () => {
-      cancelled = true
       cancelAnimationFrame(frame)
     }
-  }, [
-    activeClip,
-    isPlaying,
-    onPlayChange,
-    onPlayheadChange,
-    projectDuration,
-    runtimeAsset,
-    sortedClips,
-  ])
+  }, [isPlaying, onPlayChange, onPlayheadChange, projectDuration])
+
+  function setPreviewIssue(id: string, issue: string | null) {
+    setPreviewIssues((current) => {
+      if (!issue) {
+        if (!current[id]) {
+          return current
+        }
+
+        const next = { ...current }
+        delete next[id]
+
+        return next
+      }
+
+      if (current[id] === issue) {
+        return current
+      }
+
+      return { ...current, [id]: issue }
+    })
+  }
+
+  const previewIssue = activeClips
+    .map((clip) => previewIssues[clip.id])
+    .find(Boolean)
 
   return (
     <section
@@ -1427,46 +1346,59 @@ function PreviewStage({
     >
       <div className="grid min-h-0 place-items-center bg-card p-4">
         <div className="relative aspect-video w-full max-w-5xl overflow-hidden rounded-md bg-card">
-          {runtimeAsset ? (
-            <>
-              <video
-                ref={videoRef}
-                src={runtimeAsset.objectUrl}
-                className="absolute inset-0 block h-full w-full bg-card object-contain"
-                playsInline
-                preload="auto"
-                onError={() =>
-                  setPreviewIssue(
-                    "This browser could not decode the selected video file."
-                  )
-                }
-                onLoadedMetadata={(event) => {
-                  const video = event.currentTarget
-                  setPreviewIssue(
-                    video.videoWidth === 0 || video.videoHeight === 0
-                      ? "The audio can play, but this browser is not exposing a decodable video track for this file."
-                      : null
-                  )
-                }}
+          {previewClips.map((clip) => {
+            const runtimeAsset = runtimeAssets[clip.sourceAssetId]
+
+            if (!runtimeAsset) {
+              return null
+            }
+
+            return (
+              <PreviewVideoLayer
+                key={clip.id}
+                clip={clip}
+                runtimeAsset={runtimeAsset}
+                playheadSeconds={playheadSeconds}
+                isPlaying={isPlaying}
+                isActive={activeClipIds.has(clip.id)}
+                onIssue={(issue) => setPreviewIssue(clip.id, issue)}
               />
-              {previewIssue ? (
-                <div className="absolute inset-x-3 bottom-3 rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
-                  {previewIssue}
-                </div>
-              ) : null}
-            </>
-          ) : (
+            )
+          })}
+          {hasActiveVideo ? null : (
             <div className="absolute inset-0 grid place-items-center bg-card text-center text-sm text-muted-foreground">
               <div className="space-y-2">
                 <Film className="mx-auto size-10" />
                 <p>
-                  {hasPlayableClip
-                    ? "No clip at the playhead."
-                    : "Import or reconnect a local video file to preview."}
+                  {hasPlayableMedia
+                    ? "No video at the playhead."
+                    : "Import or reconnect local media to preview."}
                 </p>
               </div>
             </div>
           )}
+          {previewIssue ? (
+            <div className="absolute inset-x-3 bottom-3 z-[2000] rounded-md border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
+              {previewIssue}
+            </div>
+          ) : null}
+          {activeMusicTracks.map((track) => {
+            const runtimeAsset = runtimeAssets[track.sourceAssetId]
+
+            if (!runtimeAsset) {
+              return null
+            }
+
+            return (
+              <PreviewAudioLayer
+                key={track.id}
+                track={track}
+                runtimeAsset={runtimeAsset}
+                playheadSeconds={playheadSeconds}
+                isPlaying={isPlaying}
+              />
+            )
+          })}
         </div>
       </div>
       <div className="flex items-center justify-between px-4 py-3">
@@ -1475,7 +1407,7 @@ function PreviewStage({
             size="icon"
             onClick={() => onPlayChange(!isPlaying)}
             aria-label={isPlaying ? "Pause" : "Play"}
-            disabled={!hasPlayableClip}
+            disabled={!hasPlayableMedia}
           >
             {isPlaying ? <Pause /> : <Play />}
           </Button>
@@ -1488,6 +1420,219 @@ function PreviewStage({
       </div>
     </section>
   )
+}
+
+function PreviewVideoLayer({
+  clip,
+  runtimeAsset,
+  playheadSeconds,
+  isPlaying,
+  isActive,
+  onIssue,
+}: {
+  clip: TimelineClip
+  runtimeAsset: RuntimeAsset
+  playheadSeconds: number
+  isPlaying: boolean
+  isActive: boolean
+  onIssue: (issue: string | null) => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const activeObjectUrlRef = useRef<string | null>(null)
+  const [isFrameReady, setIsFrameReady] = useState(false)
+
+  useEffect(() => {
+    const player = videoRef.current
+
+    if (!player) {
+      return
+    }
+
+    const sourceChanged = activeObjectUrlRef.current !== runtimeAsset.objectUrl
+    const targetTime = getSourceTimeForTimelineItem(clip, playheadSeconds)
+    const shouldPlay = isPlaying && isActive
+    const shouldSeek =
+      sourceChanged ||
+      !shouldPlay ||
+      Math.abs(player.currentTime - targetTime) > 0.25
+
+    player.volume = clip.muted ? 0 : clip.volume
+    player.muted = clip.muted
+
+    if (shouldPlay && !shouldSeek) {
+      setIsFrameReady(true)
+
+      if (player.paused) {
+        player.play().catch(() => undefined)
+      }
+      return
+    }
+
+    let cancelled = false
+
+    async function syncVideo() {
+      if (!player) {
+        return
+      }
+
+      if (sourceChanged) {
+        player.src = runtimeAsset.objectUrl
+        activeObjectUrlRef.current = runtimeAsset.objectUrl
+        await waitForMediaMetadata(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (
+        Number.isFinite(targetTime) &&
+        Math.abs(player.currentTime - targetTime) > 0.04
+      ) {
+        player.currentTime = targetTime
+        await waitForMediaSeek(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      onIssue(
+        player.videoWidth === 0 || player.videoHeight === 0
+          ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
+          : null
+      )
+      setIsFrameReady(true)
+
+      if (shouldPlay) {
+        await player.play().catch(() => undefined)
+      } else {
+        player.pause()
+      }
+    }
+
+    syncVideo().catch(() =>
+      onIssue("This browser could not decode one of the active video files.")
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    clip,
+    isActive,
+    isPlaying,
+    onIssue,
+    playheadSeconds,
+    runtimeAsset.objectUrl,
+  ])
+
+  return (
+    <video
+      ref={videoRef}
+      className={[
+        "absolute inset-0 block h-full w-full bg-card object-contain transition-opacity duration-75",
+        isActive && isFrameReady ? "opacity-100" : "opacity-0",
+      ].join(" ")}
+      style={{ zIndex: getPreviewLayerZIndex(clip) }}
+      playsInline
+      preload="auto"
+      onError={() =>
+        onIssue("This browser could not decode one of the active video files.")
+      }
+      onLoadedMetadata={(event) => {
+        const video = event.currentTarget
+        onIssue(
+          video.videoWidth === 0 || video.videoHeight === 0
+            ? "A stacked video can play audio, but this browser is not exposing a decodable video track for it."
+            : null
+        )
+      }}
+    />
+  )
+}
+
+function PreviewAudioLayer({
+  track,
+  runtimeAsset,
+  playheadSeconds,
+  isPlaying,
+}: {
+  track: MusicTrack
+  runtimeAsset: RuntimeAsset
+  playheadSeconds: number
+  isPlaying: boolean
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const activeObjectUrlRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const player = audioRef.current
+
+    if (!player) {
+      return
+    }
+
+    const sourceChanged = activeObjectUrlRef.current !== runtimeAsset.objectUrl
+    const targetTime = getSourceTimeForTimelineItem(track, playheadSeconds)
+    const shouldSeek =
+      sourceChanged ||
+      !isPlaying ||
+      Math.abs(player.currentTime - targetTime) > 0.25
+
+    player.volume = track.volume
+
+    if (isPlaying && !shouldSeek) {
+      if (player.paused) {
+        player.play().catch(() => undefined)
+      }
+      return
+    }
+
+    let cancelled = false
+
+    async function syncAudio() {
+      if (!player) {
+        return
+      }
+
+      if (sourceChanged) {
+        player.src = runtimeAsset.objectUrl
+        activeObjectUrlRef.current = runtimeAsset.objectUrl
+        await waitForMediaMetadata(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (
+        Number.isFinite(targetTime) &&
+        Math.abs(player.currentTime - targetTime) > 0.04
+      ) {
+        player.currentTime = targetTime
+        await waitForMediaSeek(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (isPlaying) {
+        await player.play().catch(() => undefined)
+      } else {
+        player.pause()
+      }
+    }
+
+    syncAudio().catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [isPlaying, playheadSeconds, runtimeAsset.objectUrl, track])
+
+  return <audio ref={audioRef} preload="auto" />
 }
 
 function Timeline({
@@ -2338,6 +2483,40 @@ function findAvailableTrackIndex(
   return 0
 }
 
+function findNearestAvailableTrackIndex(
+  items: TimelineItemData[],
+  preferredTrackIndex: number,
+  startSeconds: number,
+  durationSeconds: number
+) {
+  const clampedPreferredTrackIndex = Math.max(0, preferredTrackIndex)
+  const candidates = [clampedPreferredTrackIndex]
+
+  for (let offset = 1; offset < 32; offset += 1) {
+    candidates.push(clampedPreferredTrackIndex + offset)
+
+    if (clampedPreferredTrackIndex - offset >= 0) {
+      candidates.push(clampedPreferredTrackIndex - offset)
+    }
+  }
+
+  return (
+    candidates.find(
+      (trackIndex) =>
+        !items.some(
+          (item) =>
+            getTrackIndex(item) === trackIndex &&
+            rangesOverlap(
+              startSeconds,
+              startSeconds + durationSeconds,
+              item.timelineStartSeconds,
+              item.timelineStartSeconds + getClipDuration(item)
+            )
+        )
+    ) ?? clampedPreferredTrackIndex
+  )
+}
+
 function constrainTimelineItemPatch<T extends TimelineItemData>(
   item: T,
   items: T[],
@@ -2399,11 +2578,12 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
       getPreviousItemEnd(laneItems, fixedEnd),
       Math.min(fixedEnd - MIN_ITEM_DURATION_SECONDS, maxEnd)
     )
-    const duration = fixedEnd - clampedStart
+    const normalizedStart = normalizeTimelineSeconds(clampedStart)
+    const duration = fixedEnd - normalizedStart
 
     return {
       ...next,
-      timelineStartSeconds: clampedStart,
+      timelineStartSeconds: normalizedStart,
       sourceStartSeconds: next.sourceEndSeconds - duration,
     }
   }
@@ -2427,7 +2607,8 @@ function constrainTimelineItemPatch<T extends TimelineItemData>(
 
     return {
       ...next,
-      sourceEndSeconds: next.sourceStartSeconds + clampedEnd - start,
+      sourceEndSeconds:
+        next.sourceStartSeconds + normalizeTimelineSeconds(clampedEnd - start),
     }
   }
 
@@ -2450,12 +2631,16 @@ function snapTimelineStart(
   const snappedStart = snapPoint(startSeconds, points)
 
   if (snappedStart !== startSeconds) {
-    return snappedStart
+    return normalizeTimelineSeconds(snappedStart)
   }
 
   const snappedEnd = snapPoint(endSeconds, points)
 
-  return snappedEnd === endSeconds ? startSeconds : snappedEnd - durationSeconds
+  return normalizeTimelineSeconds(
+    snappedEnd === endSeconds
+      ? startSeconds
+      : snappedEnd - durationSeconds - SNAP_OVERLAP_SECONDS
+  )
 }
 
 function snapPoint(value: number, points: number[]) {
@@ -2471,7 +2656,7 @@ function snapPoint(value: number, points: number[]) {
     }
   }
 
-  return Math.max(0, nearest)
+  return normalizeTimelineSeconds(Math.max(0, nearest))
 }
 
 function findNearestNonOverlappingStart(
@@ -2489,7 +2674,7 @@ function findNearestNonOverlappingStart(
     candidates.push(item.timelineStartSeconds + getClipDuration(item))
   }
 
-  return (
+  const nearestStart =
     candidates
       .filter((candidate) => candidate >= 0)
       .filter(
@@ -2506,6 +2691,39 @@ function findNearestNonOverlappingStart(
       .sort(
         (a, b) => Math.abs(a - desiredStart) - Math.abs(b - desiredStart)
       )[0] ?? Math.max(0, desiredStart)
+
+  return normalizeTimelineSeconds(nearestStart)
+}
+
+function normalizeTimelineSeconds(seconds: number) {
+  return Math.max(
+    0,
+    Math.round(seconds * TIMELINE_PRECISION_SECONDS) /
+      TIMELINE_PRECISION_SECONDS
+  )
+}
+
+function isTimelineItemActiveAt(item: TimelineItemData, seconds: number) {
+  const start = item.timelineStartSeconds
+  const end = item.timelineStartSeconds + getClipDuration(item)
+
+  return (
+    seconds + TIMELINE_EPSILON_SECONDS >= start &&
+    seconds < end + TIMELINE_EPSILON_SECONDS
+  )
+}
+
+function isTimelineItemNearTime(
+  item: TimelineItemData,
+  seconds: number,
+  lookaheadSeconds: number
+) {
+  const start = item.timelineStartSeconds
+  const end = item.timelineStartSeconds + getClipDuration(item)
+
+  return (
+    seconds + TIMELINE_EPSILON_SECONDS >= start - lookaheadSeconds &&
+    seconds < end + TIMELINE_EPSILON_SECONDS
   )
 }
 
@@ -2541,36 +2759,49 @@ function rangesOverlap(
   return startA < endB && endA > startB
 }
 
-function findClipAtTime(clips: TimelineClip[], seconds: number) {
-  return clips
-    .filter((clip) => {
-      const start = clip.timelineStartSeconds
-      const end = clip.timelineStartSeconds + getClipDuration(clip)
-
-      return seconds >= start && seconds < end
-    })
-    .sort((a, b) => getTrackIndex(b) - getTrackIndex(a))[0]
+function findTimelineItemsAtTime<T extends TimelineItemData>(
+  items: T[],
+  seconds: number
+) {
+  return items.filter((item) => isTimelineItemActiveAt(item, seconds))
 }
 
-function getSourceTimeForPlayhead(clip: TimelineClip, playheadSeconds: number) {
-  const clipOffset = clamp(
-    playheadSeconds - clip.timelineStartSeconds,
+function findTimelineItemsNearTime<T extends TimelineItemData>(
+  items: T[],
+  seconds: number,
+  lookaheadSeconds: number
+) {
+  return items.filter((item) =>
+    isTimelineItemNearTime(item, seconds, lookaheadSeconds)
+  )
+}
+
+function getPreviewLayerZIndex(item: TimelineItemData) {
+  return 1000 - getTrackIndex(item)
+}
+
+function getSourceTimeForTimelineItem(
+  item: TimelineItemData,
+  playheadSeconds: number
+) {
+  const itemOffset = clamp(
+    playheadSeconds - item.timelineStartSeconds,
     0,
-    getClipDuration(clip)
+    getClipDuration(item)
   )
 
-  return clip.sourceStartSeconds + clipOffset
+  return item.sourceStartSeconds + itemOffset
 }
 
-function waitForVideoMetadata(video: HTMLVideoElement) {
-  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+function waitForMediaMetadata(media: HTMLMediaElement) {
+  if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
     return Promise.resolve()
   }
 
   return new Promise<void>((resolve, reject) => {
     function cleanup() {
-      video.removeEventListener("loadedmetadata", onLoadedMetadata)
-      video.removeEventListener("error", onError)
+      media.removeEventListener("loadedmetadata", onLoadedMetadata)
+      media.removeEventListener("error", onError)
     }
 
     function onLoadedMetadata() {
@@ -2580,23 +2811,23 @@ function waitForVideoMetadata(video: HTMLVideoElement) {
 
     function onError() {
       cleanup()
-      reject(new Error("Could not load video metadata"))
+      reject(new Error("Could not load media metadata"))
     }
 
-    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true })
-    video.addEventListener("error", onError, { once: true })
+    media.addEventListener("loadedmetadata", onLoadedMetadata, { once: true })
+    media.addEventListener("error", onError, { once: true })
   })
 }
 
-function waitForVideoSeek(video: HTMLVideoElement) {
-  if (!video.seeking) {
+function waitForMediaSeek(media: HTMLMediaElement) {
+  if (!media.seeking) {
     return Promise.resolve()
   }
 
   return new Promise<void>((resolve, reject) => {
     function cleanup() {
-      video.removeEventListener("seeked", onSeeked)
-      video.removeEventListener("error", onError)
+      media.removeEventListener("seeked", onSeeked)
+      media.removeEventListener("error", onError)
     }
 
     function onSeeked() {
@@ -2606,11 +2837,11 @@ function waitForVideoSeek(video: HTMLVideoElement) {
 
     function onError() {
       cleanup()
-      reject(new Error("Could not seek video"))
+      reject(new Error("Could not seek media"))
     }
 
-    video.addEventListener("seeked", onSeeked, { once: true })
-    video.addEventListener("error", onError, { once: true })
+    media.addEventListener("seeked", onSeeked, { once: true })
+    media.addEventListener("error", onError, { once: true })
   })
 }
 
