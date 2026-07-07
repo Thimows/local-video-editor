@@ -77,6 +77,7 @@ const SNAP_OVERLAP_SECONDS = 0.001
 const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
 const TIMELINE_HANDLE_MIN_WIDTH = 34
+const TIMELINE_DRAG_START_THRESHOLD_PX = 3
 const CARD_CLASS = "rounded-lg bg-card"
 
 export function EditorClient() {
@@ -2141,6 +2142,7 @@ function TimelineItem({
     x: number
     y: number
     mode: TimelineDragMode
+    dragging: boolean
   } | null>(null)
   const previewRef = useRef<TimelineItemDragPreview | null>(null)
   const [preview, setPreview] = useState<TimelineItemDragPreview | null>(null)
@@ -2162,11 +2164,12 @@ function TimelineItem({
     event.stopPropagation()
     onSelect()
     event.currentTarget.setPointerCapture(event.pointerId)
-    dragRef.current = { x: event.clientX, y: event.clientY, mode }
-    const nextPreview = onDragPreview(mode, 0, 0)
-
-    previewRef.current = nextPreview
-    setPreview(nextPreview)
+    dragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      mode,
+      dragging: false,
+    }
   }
 
   function moveDrag(event: PointerEvent<HTMLDivElement>) {
@@ -2175,12 +2178,21 @@ function TimelineItem({
     }
 
     event.stopPropagation()
-    const deltaSeconds = (event.clientX - dragRef.current.x) / zoom
+    const deltaX = event.clientX - dragRef.current.x
+    const deltaY = event.clientY - dragRef.current.y
+
+    if (
+      !dragRef.current.dragging &&
+      Math.hypot(deltaX, deltaY) < TIMELINE_DRAG_START_THRESHOLD_PX
+    ) {
+      return
+    }
+
+    dragRef.current.dragging = true
+    const deltaSeconds = deltaX / zoom
     const deltaTracks =
       dragRef.current.mode === "move"
-        ? Math.round(
-            (event.clientY - dragRef.current.y) / (TRACK_HEIGHT + TRACK_GAP)
-          )
+        ? Math.round(deltaY / (TRACK_HEIGHT + TRACK_GAP))
         : 0
     const nextPreview = onDragPreview(
       dragRef.current.mode,
