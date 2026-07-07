@@ -132,6 +132,14 @@ const TIMELINE_CONTENT_INSET_X = 36
 const TIMELINE_DROP_FALLBACK_DURATION_SECONDS = 12
 const TIMELINE_DROP_FALLBACK_MIN_WIDTH = 120
 const SUPPORTED_MEDIA_EXTENSIONS = "MP4, MOV, M4V, WebM, MP3, M4A, WAV, OGG"
+const PREVIEW_RESOLUTION_OPTIONS = [
+  { label: "Full resolution", value: "full", scale: 1 },
+  { label: "Half resolution", value: "half", scale: 0.5 },
+  { label: "Quarter resolution", value: "quarter", scale: 0.25 },
+] as const
+type PreviewResolutionScale =
+  (typeof PREVIEW_RESOLUTION_OPTIONS)[number]["scale"]
+const DEFAULT_PREVIEW_RESOLUTION_SCALE: PreviewResolutionScale = 0.5
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
@@ -325,6 +333,8 @@ export function EditorClient() {
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const [timelineZoom, setTimelineZoom] = useState(4)
   const [snapEnabled, setSnapEnabled] = useState(true)
+  const [previewResolutionScale, setPreviewResolutionScale] =
+    useState<PreviewResolutionScale>(DEFAULT_PREVIEW_RESOLUTION_SCALE)
   const [timelineItemPreview, setTimelineItemPreview] =
     useState<TimelineItemPreviewPatch | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -1372,8 +1382,10 @@ export function EditorClient() {
             runtimeAssets={runtimeAssets}
             playheadSeconds={playheadSeconds}
             isPlaying={isPlaying}
+            previewResolutionScale={previewResolutionScale}
             onPlayChange={setIsPlaying}
             onPlayheadChange={setPlayheadSeconds}
+            onPreviewResolutionScaleChange={setPreviewResolutionScale}
             onOpenFileList={() => setInspectorView("files")}
           />
         </div>
@@ -2314,16 +2326,20 @@ function PreviewStage({
   runtimeAssets,
   playheadSeconds,
   isPlaying,
+  previewResolutionScale,
   onPlayChange,
   onPlayheadChange,
+  onPreviewResolutionScaleChange,
   onOpenFileList,
 }: {
   project: Project
   runtimeAssets: RuntimeAssetMap
   playheadSeconds: number
   isPlaying: boolean
+  previewResolutionScale: PreviewResolutionScale
   onPlayChange: (isPlaying: boolean) => void
   onPlayheadChange: (seconds: number) => void
+  onPreviewResolutionScaleChange: (scale: PreviewResolutionScale) => void
   onOpenFileList: () => void
 }) {
   const playheadRef = useRef(playheadSeconds)
@@ -2380,6 +2396,7 @@ function PreviewStage({
   const activeClipIds = new Set(activeClips.map((clip) => clip.id))
   const projectDuration = getProjectDuration(project)
   const previewAspectRatio = getExportAspectRatio(project.exportSettings)
+  const previewRenderScale = clampPreviewResolutionScale(previewResolutionScale)
 
   useEffect(
     () => () => {
@@ -2559,6 +2576,7 @@ function PreviewStage({
                   asset={asset}
                   frameWidth={project.exportSettings.width}
                   frameHeight={project.exportSettings.height}
+                  previewResolutionScale={previewRenderScale}
                   runtimeAsset={runtimeAsset}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
@@ -2621,7 +2639,7 @@ function PreviewStage({
           </div>
         </div>
       </div>
-      <div className="flex items-center px-4 py-3">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div className="flex items-center gap-2">
           <Button
             size="icon"
@@ -2636,9 +2654,63 @@ function PreviewStage({
             {formatDuration(projectDuration)}
           </span>
         </div>
+        <PreviewResolutionSelect
+          value={previewResolutionScale}
+          onValueChange={onPreviewResolutionScaleChange}
+        />
       </div>
     </section>
   )
+}
+
+function PreviewResolutionSelect({
+  value,
+  onValueChange,
+}: {
+  value: PreviewResolutionScale
+  onValueChange: (scale: PreviewResolutionScale) => void
+}) {
+  const selectedScale = clampPreviewResolutionScale(value)
+  const selectedIndex = Math.max(
+    0,
+    PREVIEW_RESOLUTION_OPTIONS.findIndex(
+      (option) => option.scale === selectedScale
+    )
+  )
+  const selectedOption =
+    PREVIEW_RESOLUTION_OPTIONS[selectedIndex] ?? PREVIEW_RESOLUTION_OPTIONS[1]
+
+  return (
+    <DropdownMenu>
+      <DropdownTrigger className="flex h-8 w-40 items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
+        <span className="truncate">{selectedOption.label}</span>
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+      </DropdownTrigger>
+      <DropdownContent
+        align="end"
+        checkedIndex={selectedIndex}
+        className="z-[5010] w-44"
+      >
+        {PREVIEW_RESOLUTION_OPTIONS.map((option, index) => (
+          <MenuItem
+            key={option.value}
+            index={index}
+            label={option.label}
+            checked={option.scale === selectedScale}
+            onSelect={() => onValueChange(option.scale)}
+          />
+        ))}
+      </DropdownContent>
+    </DropdownMenu>
+  )
+}
+
+function clampPreviewResolutionScale(
+  scale: PreviewResolutionScale
+): PreviewResolutionScale {
+  return PREVIEW_RESOLUTION_OPTIONS.some((option) => option.scale === scale)
+    ? scale
+    : DEFAULT_PREVIEW_RESOLUTION_SCALE
 }
 
 function PreviewVideoLayer({
@@ -2646,6 +2718,7 @@ function PreviewVideoLayer({
   asset,
   frameWidth,
   frameHeight,
+  previewResolutionScale,
   runtimeAsset,
   playheadSeconds,
   isPlaying,
@@ -2658,6 +2731,7 @@ function PreviewVideoLayer({
   asset?: SourceAsset
   frameWidth: number
   frameHeight: number
+  previewResolutionScale: PreviewResolutionScale
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
@@ -2688,6 +2762,7 @@ function PreviewVideoLayer({
     layerGeometry,
     getPreviewLayerZIndex(clip)
   )
+  const previewRenderScale = clampPreviewResolutionScale(previewResolutionScale)
 
   useEffect(
     () => () => {
@@ -2929,25 +3004,35 @@ function PreviewVideoLayer({
         ].join(" ")}
         style={layerStyle}
       >
-        <video
-          ref={videoRef}
-          className="block size-full bg-card object-contain"
-          muted
-          playsInline
-          preload="auto"
-          onError={() =>
-            onIssue(
-              "This browser could not decode one of the active video files."
-            )
-          }
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget
-            video.muted = true
-            if (video.videoWidth > 0 && video.videoHeight > 0) {
-              onIssue(null)
-            }
+        <div
+          className="absolute top-0 left-0"
+          style={{
+            height: `${previewRenderScale * 100}%`,
+            transform: `scale(${1 / previewRenderScale})`,
+            transformOrigin: "top left",
+            width: `${previewRenderScale * 100}%`,
           }}
-        />
+        >
+          <video
+            ref={videoRef}
+            className="block size-full bg-card object-contain"
+            muted
+            playsInline
+            preload="auto"
+            onError={() =>
+              onIssue(
+                "This browser could not decode one of the active video files."
+              )
+            }
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget
+              video.muted = true
+              if (video.videoWidth > 0 && video.videoHeight > 0) {
+                onIssue(null)
+              }
+            }}
+          />
+        </div>
       </div>
       <audio ref={audioRef} preload="auto" />
     </>
