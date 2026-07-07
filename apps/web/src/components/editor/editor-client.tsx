@@ -1954,8 +1954,8 @@ function ExportDialog({
             </DialogDescription>
           </div>
 
-          <div className="space-y-1 text-sm">
-            <Label className="text-xs font-normal text-muted-foreground">
+          <div className="text-sm">
+            <Label className="mb-1 block text-xs font-normal text-muted-foreground">
               Format
             </Label>
             <DropdownMenu disabled={isExporting}>
