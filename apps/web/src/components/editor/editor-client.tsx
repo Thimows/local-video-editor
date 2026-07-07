@@ -3269,7 +3269,7 @@ function Timeline({
       </div>
 
       <div
-        className="min-w-0 overflow-y-auto"
+        className="min-w-0 overflow-y-auto rounded-b-xl bg-card"
         style={{
           height: viewportHeight,
         }}
