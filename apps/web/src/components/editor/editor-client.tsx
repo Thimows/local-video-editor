@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
+import { toast } from "sonner"
 import {
   IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
@@ -130,6 +131,7 @@ const TIMELINE_DRAG_START_THRESHOLD_PX = 3
 const TIMELINE_CONTENT_INSET_X = 36
 const TIMELINE_DROP_FALLBACK_DURATION_SECONDS = 12
 const TIMELINE_DROP_FALLBACK_MIN_WIDTH = 120
+const SUPPORTED_MEDIA_EXTENSIONS = "MP4, MOV, M4V, WebM, MP3, M4A, WAV, OGG"
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
@@ -676,6 +678,33 @@ export function EditorClient() {
       return
     }
 
+    const supportedFiles = files
+      .map((file) => ({ file, type: getFileKind(file) }))
+      .filter((item): item is { file: File; type: "video" | "audio" } =>
+        Boolean(item.type)
+      )
+    const unsupportedFiles = files.filter((file) => !getFileKind(file))
+
+    if (unsupportedFiles.length > 0) {
+      showUnsupportedMediaToast(unsupportedFiles)
+    }
+
+    if (supportedFiles.length === 0) {
+      return
+    }
+
+    const baseClips = placement?.insertTrackAtTop
+      ? project.clips.map((clip) => ({
+          ...clip,
+          trackIndex: getTrackIndex(clip) + 1,
+        }))
+      : project.clips
+    const baseMusicTracks = placement?.insertTrackAtTop
+      ? project.musicTracks.map((track) => ({
+          ...track,
+          trackIndex: getTrackIndex(track) + 1,
+        }))
+      : project.musicTracks
     const importedAssets: SourceAsset[] = []
     const importedClips: TimelineClip[] = []
     const importedTracks: MusicTrack[] = []
@@ -684,13 +713,7 @@ export function EditorClient() {
       placement?.timelineStartSeconds ?? getProjectDuration(project)
     let placedTimelineOffset = 0
 
-    for (const file of files) {
-      const type = getFileKind(file)
-
-      if (!type) {
-        continue
-      }
-
+    for (const { file, type } of supportedFiles) {
       const metadata = await readMediaMetadata(file, type)
       const fileHandle = handles[file.name]
       const fileBlob = getPersistedFileBlob(file)
@@ -712,8 +735,8 @@ export function EditorClient() {
       nextRuntimeAssets[asset.id] = createRuntimeAsset(file)
 
       const timelineItems = [
-        ...project.clips,
-        ...project.musicTracks,
+        ...baseClips,
+        ...baseMusicTracks,
         ...importedClips,
         ...importedTracks,
       ]
@@ -723,7 +746,7 @@ export function EditorClient() {
       const desiredTrackIndex = placement
         ? findNearestAvailableTrackIndex(
             timelineItems,
-            placement.trackIndex,
+            placement.insertTrackAtTop ? 0 : placement.trackIndex,
             desiredStart,
             sourceEndSeconds
           )
@@ -781,8 +804,8 @@ export function EditorClient() {
     const nextProject = {
       ...project,
       sourceAssets: [...project.sourceAssets, ...importedAssets],
-      clips: [...project.clips, ...importedClips],
-      musicTracks: [...project.musicTracks, ...importedTracks],
+      clips: [...baseClips, ...importedClips],
+      musicTracks: [...baseMusicTracks, ...importedTracks],
       updatedAt: Date.now(),
     }
 
@@ -3226,8 +3249,14 @@ function Timeline({
   const [topTrackInsertItemId, setTopTrackInsertItemId] = useState<
     string | null
   >(null)
+  const [dropPreview, setDropPreview] = useState<TimelineDropPreview | null>(
+    null
+  )
+  const hasTopTrackInsertPreview =
+    Boolean(topTrackInsertItemId) || Boolean(dropPreview?.insertTrackAtTop)
   const trackCount =
-    Math.max(4, getTrackCount(timelineItems)) + (topTrackInsertItemId ? 1 : 0)
+    Math.max(4, getTrackCount(timelineItems)) +
+    (hasTopTrackInsertPreview ? 1 : 0)
   const timelineHeight =
     TIMELINE_TRACK_TOP + trackCount * (TRACK_HEIGHT + TRACK_GAP) + 12
   const timelineContentHeight = Math.max(timelineHeight, viewportHeight)
@@ -3256,9 +3285,6 @@ function Timeline({
   const [hoverSeconds, setHoverSeconds] = useState<number | null>(null)
   const [isSeeking, setIsSeeking] = useState(false)
   const [snapPreview, setSnapPreview] = useState<TimelineSnapPreview | null>(
-    null
-  )
-  const [dropPreview, setDropPreview] = useState<TimelineDropPreview | null>(
     null
   )
   const snapItems = timelineItems
@@ -3712,7 +3738,8 @@ function Timeline({
   function getRenderedTrackIndex(item: TimelineItemData) {
     const trackIndex = getTrackIndex(item)
 
-    return topTrackInsertItemId && item.id !== topTrackInsertItemId
+    return hasTopTrackInsertPreview &&
+      (!topTrackInsertItemId || item.id !== topTrackInsertItemId)
       ? trackIndex + 1
       : trackIndex
   }
@@ -4660,12 +4687,14 @@ type TimelineDroppedFile = {
 type TimelineDropPlacement = {
   timelineStartSeconds: number
   trackIndex: number
+  insertTrackAtTop?: boolean
 }
 type TimelineDropPreview = {
   top: number
   left: number
   width: number
   placement: TimelineDropPlacement
+  insertTrackAtTop?: boolean
 }
 type TimelineDropMetadataCache = {
   durationSeconds?: number
@@ -4755,10 +4784,11 @@ function getTimelineDropPreviewFromPoint({
     duration,
     contentInsetX
   )
-  const trackIndex = Math.max(
-    0,
-    Math.round((y - TIMELINE_TRACK_TOP) / (TRACK_HEIGHT + TRACK_GAP))
+  const rawTrackIndex = Math.round(
+    (y - TIMELINE_TRACK_TOP) / (TRACK_HEIGHT + TRACK_GAP)
   )
+  const insertTrackAtTop = rawTrackIndex < 0
+  const trackIndex = insertTrackAtTop ? 0 : Math.max(0, rawTrackIndex)
 
   return {
     top: getTimelineTrackTop(trackIndex),
@@ -4767,7 +4797,9 @@ function getTimelineDropPreviewFromPoint({
     placement: {
       timelineStartSeconds,
       trackIndex,
+      insertTrackAtTop,
     },
+    insertTrackAtTop,
   }
 }
 
@@ -5651,6 +5683,22 @@ function isTextEditingTarget(target: EventTarget | null) {
     tagName === "select" ||
     target.getAttribute("role") === "textbox"
   )
+}
+
+function showUnsupportedMediaToast(files: File[]) {
+  const firstFile = files[0]
+  const title =
+    files.length === 1 ? "Unsupported file" : `${files.length} unsupported files`
+  const description =
+    files.length === 1 && firstFile
+      ? `${firstFile.name} is not a supported video or audio file. Supported: ${SUPPORTED_MEDIA_EXTENSIONS}.`
+      : `Supported: ${SUPPORTED_MEDIA_EXTENSIONS}.`
+
+  toast.warning(title, {
+    id: "unsupported-media-file",
+    description,
+    duration: 5000,
+  })
 }
 
 function getPersistedFileBlob(file: File) {

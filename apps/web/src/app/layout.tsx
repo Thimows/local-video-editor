@@ -5,6 +5,7 @@ import type { Metadata } from "next"
 import "@workspace/ui/globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
+import { Toaster } from "@/components/toaster"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
 import { IconProvider } from "@workspace/ui/lib/icon-context"
 import { ShapeProvider } from "@workspace/ui/lib/shape-context"
@@ -53,6 +54,7 @@ export default function RootLayout({
                 <TooltipProvider>
                   <ServiceWorkerRegister />
                   {children}
+                  <Toaster />
                 </TooltipProvider>
               </SurfaceProvider>
             </ShapeProvider>
