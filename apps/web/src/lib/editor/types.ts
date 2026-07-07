@@ -12,6 +12,7 @@ export type SourceAsset = {
   height?: number
   createdAt: number
   fileHandle?: FileSystemFileHandle
+  fileBlob?: File
 }
 
 export type TimelineClip = {

@@ -168,7 +168,12 @@ export async function restoreProjectFileHandles(
     const handle = asset.fileHandle
 
     if (!handle?.getFile) {
-      unavailableCount += 1
+      if (asset.fileBlob) {
+        runtimeAssets[asset.id] = createRuntimeAsset(asset.fileBlob)
+        restoredCount += 1
+      } else {
+        unavailableCount += 1
+      }
       continue
     }
 
@@ -184,7 +189,12 @@ export async function restoreProjectFileHandles(
             : currentPermission
 
       if (permission !== "granted") {
-        permissionNeededCount += 1
+        if (asset.fileBlob) {
+          runtimeAssets[asset.id] = createRuntimeAsset(asset.fileBlob)
+          restoredCount += 1
+        } else {
+          permissionNeededCount += 1
+        }
         continue
       }
 
@@ -193,7 +203,12 @@ export async function restoreProjectFileHandles(
       runtimeAssets[asset.id] = createRuntimeAsset(file)
       restoredCount += 1
     } catch {
-      unavailableCount += 1
+      if (asset.fileBlob) {
+        runtimeAssets[asset.id] = createRuntimeAsset(asset.fileBlob)
+        restoredCount += 1
+      } else {
+        unavailableCount += 1
+      }
     }
   }
 
