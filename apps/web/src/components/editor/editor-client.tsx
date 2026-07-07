@@ -67,8 +67,8 @@ import {
 
 const TRACK_HEADER_WIDTH = 56
 const RULER_HEIGHT = 28
-const TRACK_HEIGHT = 42
-const TRACK_GAP = 8
+const TRACK_HEIGHT = 34
+const TRACK_GAP = 5
 const VIDEO_TRACK_TOP = RULER_HEIGHT + 10
 const SNAP_THRESHOLD_SECONDS = 1
 const MIN_ITEM_DURATION_SECONDS = 0.2
@@ -76,6 +76,7 @@ const PREVIEW_PRELOAD_SECONDS = 0.75
 const SNAP_OVERLAP_SECONDS = 0.001
 const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
+const TIMELINE_HANDLE_MIN_WIDTH = 34
 const CARD_CLASS = "rounded-lg bg-card"
 
 export function EditorClient() {
@@ -101,20 +102,57 @@ export function EditorClient() {
     function onKeyDown(event: KeyboardEvent) {
       if (
         event.repeat ||
-        (event.code !== "Space" && event.key !== " ") ||
+        (event.code !== "Space" &&
+          event.key !== " " &&
+          event.key !== "Backspace" &&
+          event.key !== "Delete") ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
         isTextEditingTarget(event.target)
       ) {
         return
       }
 
+      if (event.code === "Space" || event.key === " ") {
+        event.preventDefault()
+        setIsPlaying((current) => !current)
+        return
+      }
+
       event.preventDefault()
-      setIsPlaying((current) => !current)
+      setProject((current) => {
+        if (!current) {
+          return current
+        }
+
+        if (selection.type === "clip") {
+          return {
+            ...current,
+            clips: current.clips.filter((clip) => clip.id !== selection.id),
+            updatedAt: Date.now(),
+          }
+        }
+
+        if (selection.type === "music") {
+          return {
+            ...current,
+            musicTracks: current.musicTracks.filter(
+              (track) => track.id !== selection.id
+            ),
+            updatedAt: Date.now(),
+          }
+        }
+
+        return current
+      })
+      setSelection({ type: "project" })
     }
 
     window.addEventListener("keydown", onKeyDown)
 
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
+  }, [selection])
 
   useEffect(() => {
     function preventPageZoomWheel(event: WheelEvent) {
@@ -1785,6 +1823,7 @@ function Timeline({
   }
 
   function seekFromPointer(event: PointerEvent<HTMLDivElement>) {
+    onSelect({ type: "project" })
     onPlayheadChange(getSecondsFromPointer(event))
   }
 
@@ -1892,6 +1931,7 @@ function Timeline({
         </div>
         <div
           ref={timelineRef}
+          data-timeline-drop-zone="true"
           className="h-full w-full max-w-full min-w-0 [touch-action:pan-x] overflow-x-auto overflow-y-hidden overscroll-x-contain"
           style={{
             contain: "layout paint",
@@ -1989,7 +2029,7 @@ function Timeline({
                   key={clip.id}
                   top={getVideoTrackTop(trackIndex)}
                   left={clip.timelineStartSeconds * zoom}
-                  width={Math.max(28, getClipDuration(clip) * zoom)}
+                  width={getClipDuration(clip) * zoom}
                   selected={
                     selection.type === "clip" && selection.id === clip.id
                   }
@@ -2031,7 +2071,7 @@ function Timeline({
                   key={track.id}
                   top={getAudioTrackTop(trackIndex, audioTrackTop)}
                   left={track.timelineStartSeconds * zoom}
-                  width={Math.max(28, getClipDuration(track) * zoom)}
+                  width={getClipDuration(track) * zoom}
                   selected={
                     selection.type === "music" && selection.id === track.id
                   }
@@ -2105,6 +2145,15 @@ function TimelineItem({
   const previewRef = useRef<TimelineItemDragPreview | null>(null)
   const [preview, setPreview] = useState<TimelineItemDragPreview | null>(null)
   const stylePreview = preview ?? { top, left, width }
+  const showHandles = stylePreview.width >= TIMELINE_HANDLE_MIN_WIDTH
+  const contentClassName = [
+    "flex h-full items-center justify-between gap-2",
+    showHandles ? "pr-3 pl-4" : "px-2.5",
+  ].join(" ")
+  const handleClassName = [
+    "absolute top-1/2 z-10 h-5 w-1 -translate-y-1/2 cursor-ew-resize rounded-full",
+    selected ? "bg-primary-foreground/80" : "bg-foreground/25",
+  ].join(" ")
 
   function startDrag(
     event: PointerEvent<HTMLDivElement>,
@@ -2143,14 +2192,18 @@ function TimelineItem({
     setPreview(nextPreview)
   }
 
-  function endDrag() {
-    if (previewRef.current) {
-      onDragCommit(previewRef.current)
-    }
-
+  function resetDrag() {
     previewRef.current = null
     dragRef.current = null
     setPreview(null)
+  }
+
+  function endDrag(event: PointerEvent<HTMLDivElement>) {
+    if (previewRef.current && isPointerInsideTimelineDropZone(event)) {
+      onDragCommit(previewRef.current)
+    }
+
+    resetDrag()
   }
 
   return (
@@ -2161,7 +2214,7 @@ function TimelineItem({
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border bg-background",
         connected ? "" : "opacity-60",
-        preview ? "z-30 opacity-80 ring-2 ring-primary/30" : "",
+        preview ? "z-30 opacity-80" : "",
       ].join(" ")}
       style={{
         top: stylePreview.top,
@@ -2172,21 +2225,42 @@ function TimelineItem({
       onPointerDown={(event) => startDrag(event, "move")}
       onPointerMove={moveDrag}
       onPointerUp={endDrag}
-      onPointerCancel={endDrag}
+      onPointerCancel={resetDrag}
     >
-      <div
-        className="absolute top-0 left-0 h-full w-2 cursor-ew-resize bg-foreground/15"
-        onPointerDown={(event) => startDrag(event, "start")}
-      />
-      <div className="flex h-full items-center justify-between gap-2 px-3">
+      {showHandles ? (
+        <div
+          className={`${handleClassName} left-1`}
+          onPointerDown={(event) => startDrag(event, "start")}
+        />
+      ) : null}
+      <div className={contentClassName}>
         <span className="truncate">{label}</span>
         {muted ? <VolumeX className="size-3 shrink-0" /> : null}
       </div>
-      <div
-        className="absolute top-0 right-0 h-full w-2 cursor-ew-resize bg-foreground/15"
-        onPointerDown={(event) => startDrag(event, "end")}
-      />
+      {showHandles ? (
+        <div
+          className={`${handleClassName} right-1`}
+          onPointerDown={(event) => startDrag(event, "end")}
+        />
+      ) : null}
     </div>
+  )
+}
+
+function isPointerInsideTimelineDropZone(event: PointerEvent<HTMLElement>) {
+  const dropZone = event.currentTarget.closest("[data-timeline-drop-zone]")
+
+  if (!(dropZone instanceof HTMLElement)) {
+    return false
+  }
+
+  const rect = dropZone.getBoundingClientRect()
+
+  return (
+    event.clientX >= rect.left &&
+    event.clientX <= rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY <= rect.bottom
   )
 }
 
@@ -2385,7 +2459,7 @@ function getTimelineItemDragPreview<T extends TimelineItemData>(
   return {
     top: getTop(getTrackIndex(next)),
     left: next.timelineStartSeconds * zoom,
-    width: Math.max(28, getClipDuration(next) * zoom),
+    width: getClipDuration(next) * zoom,
     patch: getTimelineCommitPatch(next, mode),
   }
 }
