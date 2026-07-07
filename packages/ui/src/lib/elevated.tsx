@@ -1,13 +1,13 @@
-"use client"
+"use client";
 
 import {
   forwardRef,
   type ComponentPropsWithoutRef,
   type ReactNode,
-} from "react"
-import { cn } from "@workspace/ui/lib/utils"
-import { useSurface, SurfaceProvider } from "@workspace/ui/lib/surface-context"
-import { surfaceClasses } from "@workspace/ui/lib/surface-classes"
+} from "react";
+import { cn } from "@workspace/ui/lib/utils";
+import { useSurface, SurfaceProvider } from "@workspace/ui/lib/surface-context";
+import { surfaceClasses } from "@workspace/ui/lib/surface-classes";
 
 interface ElevatedProps extends ComponentPropsWithoutRef<"div"> {
   /**
@@ -21,7 +21,7 @@ interface ElevatedProps extends ComponentPropsWithoutRef<"div"> {
    *   2 — dropdown / popover / select menu
    *   4 — dialog / modal
    */
-  offset: number
+  offset: number;
   /**
    * Override for the shadow level. Defaults to the computed surface level.
    *
@@ -30,14 +30,14 @@ interface ElevatedProps extends ComponentPropsWithoutRef<"div"> {
    * reads `shadow-surface-3` whether it opens on the page or inside a
    * dialog, even though its background tracks the substrate.
    */
-  shadowLevel?: number
-  children?: ReactNode
+  shadowLevel?: number;
+  children?: ReactNode;
 }
 
 const Elevated = forwardRef<HTMLDivElement, ElevatedProps>(
   ({ offset, shadowLevel, className, children, ...props }, ref) => {
-    const substrate = useSurface()
-    const level = Math.min(substrate + offset, 8)
+    const substrate = useSurface();
+    const level = Math.min(substrate + offset, 8);
     return (
       <SurfaceProvider value={level}>
         <div
@@ -48,9 +48,9 @@ const Elevated = forwardRef<HTMLDivElement, ElevatedProps>(
           {children}
         </div>
       </SurfaceProvider>
-    )
+    );
   }
-)
-Elevated.displayName = "Elevated"
+);
+Elevated.displayName = "Elevated";
 
-export { Elevated }
+export { Elevated };

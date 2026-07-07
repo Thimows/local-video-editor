@@ -1,6 +1,6 @@
 export type SourceAssetType = "video" | "audio"
 
-export type ExportFormat = "webm"
+export type ExportFormat = "webm" | "mp4"
 
 export type SourceAsset = {
   id: string
@@ -22,6 +22,9 @@ export type TimelineClip = {
   sourceEndSeconds: number
   timelineStartSeconds: number
   trackIndex?: number
+  scale?: number
+  positionX?: number
+  positionY?: number
   muted: boolean
   volume: number
 }

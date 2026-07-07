@@ -1,5 +1,6 @@
 "use client"
 
+import { forwardRef } from "react"
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 import { IconXFilled as X } from "@tabler/icons-react"
 
@@ -45,18 +46,16 @@ function DialogDescription({
   )
 }
 
-function DialogContent({
-  className,
-  children,
-  ...props
-}: DialogPrimitive.Popup.Props) {
+const DialogContent = forwardRef<HTMLDivElement, DialogPrimitive.Popup.Props>(
+  function DialogContent({ className, children, ...props }, ref) {
   return (
     <DialogPortal>
-      <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
+      <DialogPrimitive.Backdrop className="fixed inset-0 z-[5000] bg-background/70 backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
       <DialogPrimitive.Popup
+        ref={ref}
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-[min(calc(100vw-2rem),30rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-5 text-popover-foreground shadow-xl outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-[5001] grid w-[min(calc(100vw-2rem),30rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-5 text-popover-foreground shadow-xl outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
@@ -78,7 +77,9 @@ function DialogContent({
       </DialogPrimitive.Popup>
     </DialogPortal>
   )
-}
+  }
+)
+DialogContent.displayName = "DialogContent"
 
 export {
   Dialog,

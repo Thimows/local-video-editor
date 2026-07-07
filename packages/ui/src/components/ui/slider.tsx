@@ -1,5 +1,5 @@
 // @ts-nocheck
-"use client"
+"use client";
 
 import {
   forwardRef,
@@ -11,7 +11,7 @@ import {
   useMemo,
   type CSSProperties,
   type HTMLAttributes,
-} from "react"
+} from "react";
 import {
   motion,
   useMotionValue,
@@ -19,55 +19,53 @@ import {
   animate,
   AnimatePresence,
   type MotionValue,
-} from "framer-motion"
-import * as SliderPrimitive from "@radix-ui/react-slider"
-import { cn } from "@workspace/ui/lib/utils"
-import { spring } from "@workspace/ui/lib/springs"
-import { fontWeights } from "@workspace/ui/lib/font-weight"
-import { useShape } from "@workspace/ui/lib/shape-context"
+} from "framer-motion";
+import { Slider as SliderPrimitive } from "@base-ui/react/slider";
+import { cn } from "@workspace/ui/lib/utils";
+import { spring } from "@workspace/ui/lib/springs";
+import { fontWeights } from "@workspace/ui/lib/font-weight";
+import { useShape } from "@workspace/ui/lib/shape-context";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type SliderValue = number | [number, number]
-type ValuePosition = "left" | "right" | "top" | "bottom" | "tooltip"
+type SliderValue = number | [number, number];
+type ValuePosition = "left" | "right" | "top" | "bottom" | "tooltip";
 
-interface SliderProps extends Omit<
-  HTMLAttributes<HTMLDivElement>,
-  "onChange" | "defaultValue"
-> {
-  value: SliderValue
-  onChange: (value: SliderValue) => void
-  min?: number
-  max?: number
-  step?: number
-  showSteps?: boolean
-  showValue?: boolean
-  valuePosition?: ValuePosition
-  formatValue?: (v: number) => string
-  label?: string
-  disabled?: boolean
-  trackClassName?: string
-  trackStyle?: CSSProperties
-  fillClassName?: string
-  fillStyle?: CSSProperties
-  hideFill?: boolean
-  thumbColor?: string
-  thumbBorderColor?: string
+interface SliderProps
+  extends Omit<HTMLAttributes<HTMLDivElement>, "onChange" | "defaultValue"> {
+  value: SliderValue;
+  onChange: (value: SliderValue) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  showSteps?: boolean;
+  showValue?: boolean;
+  valuePosition?: ValuePosition;
+  formatValue?: (v: number) => string;
+  label?: string;
+  disabled?: boolean;
+  trackClassName?: string;
+  trackStyle?: CSSProperties;
+  fillClassName?: string;
+  fillStyle?: CSSProperties;
+  hideFill?: boolean;
+  thumbColor?: string;
+  thumbBorderColor?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const THUMB_SIZE = 20
-const THUMB_SIZE_REST = 16
-const TRACK_BG_HEIGHT = 18
-const DOT_SIZE = 4
-const PIP_SIZE = 5
+const THUMB_SIZE = 20;
+const THUMB_SIZE_REST = 16;
+const TRACK_BG_HEIGHT = 18;
+const DOT_SIZE = 4;
+const PIP_SIZE = 5;
 // Inset track BG so its rounded-end centers align with thumb centers at min/max
-const TRACK_INSET = (THUMB_SIZE - TRACK_BG_HEIGHT) / 2
+const TRACK_INSET = (THUMB_SIZE - TRACK_BG_HEIGHT) / 2;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,9 +77,9 @@ function valueToPixel(
   max: number,
   trackWidth: number
 ): number {
-  if (max === min) return 0
-  const usable = trackWidth - THUMB_SIZE
-  return ((v - min) / (max - min)) * usable
+  if (max === min) return 0;
+  const usable = trackWidth - THUMB_SIZE;
+  return ((v - min) / (max - min)) * usable;
 }
 
 function pixelToValue(
@@ -91,15 +89,15 @@ function pixelToValue(
   step: number,
   trackWidth: number
 ): number {
-  const usable = trackWidth - THUMB_SIZE
-  if (usable <= 0) return min
-  const raw = (px / usable) * (max - min) + min
-  const snapped = Math.round((raw - min) / step) * step + min
-  return Math.max(min, Math.min(max, snapped))
+  const usable = trackWidth - THUMB_SIZE;
+  if (usable <= 0) return min;
+  const raw = (px / usable) * (max - min) + min;
+  const snapped = Math.round((raw - min) / step) * step + min;
+  return Math.max(min, Math.min(max, snapped));
 }
 
 function toRadixValue(value: SliderValue): number[] {
-  return Array.isArray(value) ? value : [value]
+  return Array.isArray(value) ? value : [value];
 }
 
 // ---------------------------------------------------------------------------
@@ -107,18 +105,18 @@ function toRadixValue(value: SliderValue): number[] {
 // ---------------------------------------------------------------------------
 
 interface ValueDisplayProps {
-  values: number[]
-  editingIndex: number | null
-  onStartEdit: (index: number) => void
-  onCommitEdit: (index: number, v: number) => void
-  onCancelEdit: () => void
-  min: number
-  max: number
-  step: number
-  formatValue: (v: number) => string
-  label?: string
-  isRange: boolean
-  isInteracting: boolean
+  values: number[];
+  editingIndex: number | null;
+  onStartEdit: (index: number) => void;
+  onCommitEdit: (index: number, v: number) => void;
+  onCancelEdit: () => void;
+  min: number;
+  max: number;
+  step: number;
+  formatValue: (v: number) => string;
+  label?: string;
+  isRange: boolean;
+  isInteracting: boolean;
 }
 
 function ValueDisplay({
@@ -135,30 +133,30 @@ function ValueDisplay({
   isRange,
   isInteracting,
 }: ValueDisplayProps) {
-  const shape = useShape()
-  const [inputValue, setInputValue] = useState("")
-  const inputRef = useRef<HTMLInputElement>(null)
+  const shape = useShape();
+  const [inputValue, setInputValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editingIndex !== null) {
-      setInputValue(String(values[editingIndex]))
-      requestAnimationFrame(() => inputRef.current?.select())
+      setInputValue(String(values[editingIndex]));
+      requestAnimationFrame(() => inputRef.current?.select());
     }
-  }, [editingIndex])
+  }, [editingIndex]);
 
   const commitEdit = useCallback(
     (index: number) => {
-      const parsed = parseFloat(inputValue)
+      const parsed = parseFloat(inputValue);
       if (!isNaN(parsed)) {
-        const clamped = Math.max(min, Math.min(max, parsed))
-        const snapped = Math.round((clamped - min) / step) * step + min
-        onCommitEdit(index, snapped)
+        const clamped = Math.max(min, Math.min(max, parsed));
+        const snapped = Math.round((clamped - min) / step) * step + min;
+        onCommitEdit(index, snapped);
       } else {
-        onCancelEdit()
+        onCancelEdit();
       }
     },
     [inputValue, min, max, step, onCommitEdit, onCancelEdit]
-  )
+  );
 
   const renderValue = (index: number) => {
     if (editingIndex === index) {
@@ -166,7 +164,7 @@ function ValueDisplay({
         <span className="inline-grid text-[13px]">
           {/* Ghost for layout stability — widest possible value */}
           <span
-            className="invisible col-start-1 row-start-1"
+            className="col-start-1 row-start-1 invisible"
             style={{ fontVariationSettings: fontWeights.medium }}
             aria-hidden="true"
           >
@@ -174,7 +172,9 @@ function ValueDisplay({
             {formatValue(max)}
           </span>
           <span className="col-start-1 row-start-1 flex items-center gap-1">
-            {label && <span className="text-muted-foreground">{label}:</span>}
+            {label && (
+              <span className="text-muted-foreground">{label}:</span>
+            )}
             <input
               ref={inputRef}
               type="number"
@@ -185,19 +185,19 @@ function ValueDisplay({
               onChange={(e) => setInputValue(e.target.value)}
               onBlur={() => commitEdit(index)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") commitEdit(index)
-                if (e.key === "Escape") onCancelEdit()
+                if (e.key === "Enter") commitEdit(index);
+                if (e.key === "Escape") onCancelEdit();
               }}
               aria-label={`Edit slider value${isRange ? (index === 0 ? " (start)" : " (end)") : ""}`}
               className={cn(
-                "w-[5ch] border-b border-border bg-transparent text-center text-foreground outline-none",
+                "w-[5ch] bg-transparent text-foreground outline-none border-b border-border text-center",
                 shape.input
               )}
               style={{ fontVariationSettings: fontWeights.medium }}
             />
           </span>
         </span>
-      )
+      );
     }
 
     return (
@@ -207,12 +207,13 @@ function ValueDisplay({
       >
         {formatValue(values[index])}
       </span>
-    )
-  }
+    );
+  };
+
 
   const widestValue = isRange
     ? `${label ? `${label}: ` : ""}${formatValue(max)} — ${formatValue(max)}`
-    : `${label ? `${label}: ` : ""}${formatValue(max)}`
+    : `${label ? `${label}: ` : ""}${formatValue(max)}`;
 
   return (
     <span
@@ -228,7 +229,7 @@ function ValueDisplay({
     >
       {/* Invisible ghost — reserves width of widest possible value */}
       <span
-        className="invisible col-start-1 row-start-1 whitespace-nowrap"
+        className="col-start-1 row-start-1 invisible whitespace-nowrap"
         style={{ fontVariationSettings: fontWeights.medium }}
         aria-hidden="true"
       >
@@ -249,7 +250,7 @@ function ValueDisplay({
         )}
       </span>
     </span>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -257,17 +258,17 @@ function ValueDisplay({
 // ---------------------------------------------------------------------------
 
 interface TooltipValueProps {
-  value: number
-  formatValue: (v: number) => string
-  motionX: MotionValue<number>
+  value: number;
+  formatValue: (v: number) => string;
+  motionX: MotionValue<number>;
 }
 
 function TooltipValue({ value, formatValue, motionX }: TooltipValueProps) {
-  const shape = useShape()
-  const tooltipX = useTransform(motionX, (x) => x + THUMB_SIZE / 2)
+  const shape = useShape();
+  const tooltipX = useTransform(motionX, (x) => x + THUMB_SIZE / 2);
   return (
     <motion.div
-      className="pointer-events-none absolute z-20 -translate-x-1/2"
+      className="absolute -translate-x-1/2 pointer-events-none z-20"
       style={{
         x: tooltipX,
         top: -16,
@@ -278,16 +279,13 @@ function TooltipValue({ value, formatValue, motionX }: TooltipValueProps) {
       transition={spring.fast}
     >
       <span
-        className={cn(
-          "bg-foreground px-2 py-1 text-[12px] whitespace-nowrap text-background tabular-nums",
-          shape.bg
-        )}
+        className={cn("text-[12px] text-background tabular-nums whitespace-nowrap bg-foreground px-2 py-1", shape.bg)}
         style={{ fontVariationSettings: fontWeights.medium }}
       >
         {formatValue(value)}
       </span>
     </motion.div>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -320,81 +318,79 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
     },
     ref
   ) => {
-    const isRange = Array.isArray(value)
-    const values = toRadixValue(value)
-    const shape = useShape()
+    const isRange = Array.isArray(value);
+    const values = toRadixValue(value);
+    const shape = useShape();
 
     // --- Refs ---
-    const trackRef = useRef<HTMLDivElement>(null)
-    const trackWidthRef = useRef(0)
-    const dragging = useRef(false)
-    const activeDragThumb = useRef<number>(0)
-    const valuesRef = useRef(values)
-    const minRef = useRef(min)
-    const maxRef = useRef(max)
-    valuesRef.current = values
-    minRef.current = min
-    maxRef.current = max
+    const trackRef = useRef<HTMLDivElement>(null);
+    const trackWidthRef = useRef(0);
+    const dragging = useRef(false);
+    const activeDragThumb = useRef<number>(0);
+    const valuesRef = useRef(values);
+    const minRef = useRef(min);
+    const maxRef = useRef(max);
+    valuesRef.current = values;
+    minRef.current = min;
+    maxRef.current = max;
 
     // --- State ---
-    const [isHovered, setIsHovered] = useState(false)
-    const [isPressed, setIsPressed] = useState(false)
-    const [editingIndex, setEditingIndex] = useState<number | null>(null)
+    const [isHovered, setIsHovered] = useState(false);
+    const [isPressed, setIsPressed] = useState(false);
+    const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [hoverPreview, setHoverPreview] = useState<{
-      left: number
-      width: number
-      snappedValue: number
-      cursorX: number
-    } | null>(null)
-    const [focusedThumb, setFocusedThumb] = useState<number | null>(null)
-    const [showHoverTooltip, setShowHoverTooltip] = useState(false)
-    const hoverDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+      left: number;
+      width: number;
+      snappedValue: number;
+      cursorX: number;
+    } | null>(null);
+    const [focusedThumb, setFocusedThumb] = useState<number | null>(null);
+    const [showHoverTooltip, setShowHoverTooltip] = useState(false);
+    const hoverDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Show hover tooltip after 100ms delay
     useEffect(() => {
       if (isHovered) {
-        hoverDelayRef.current = setTimeout(() => setShowHoverTooltip(true), 100)
+        hoverDelayRef.current = setTimeout(() => setShowHoverTooltip(true), 100);
       } else {
-        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current)
-        setShowHoverTooltip(false)
+        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current);
+        setShowHoverTooltip(false);
       }
-      return () => {
-        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current)
-      }
-    }, [isHovered])
+      return () => { if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current); };
+    }, [isHovered]);
 
     // --- Motion values ---
-    const motionX0 = useMotionValue(0)
-    const motionX1 = useMotionValue(0)
+    const motionX0 = useMotionValue(0);
+    const motionX1 = useMotionValue(0);
 
     // --- Derived motion values for fill ---
     const fillLeft = useTransform(motionX0, (x) =>
       isRange ? x + THUMB_SIZE / 2 - TRACK_INSET : 0
-    )
-    const fillWidthSingle = useTransform(
-      motionX0,
-      (x) => x + THUMB_SIZE / 2 - TRACK_INSET
-    )
+    );
+    const fillWidthSingle = useTransform(motionX0, (x) => x + THUMB_SIZE / 2 - TRACK_INSET);
     const fillWidthRange = useTransform(
       [motionX0, motionX1] as MotionValue<number>[],
       ([x0, x1]) => (x1 as number) - (x0 as number)
-    )
-    const fillWidth = isRange ? fillWidthRange : fillWidthSingle
+    );
+    const fillWidth = isRange ? fillWidthRange : fillWidthSingle;
 
     // --- Step dots mask (hides dots on filled side, like SliderComfortable pips) ---
-    const stepDotsMaskSingle = useTransform(motionX0, (x) => {
-      const edge = x + THUMB_SIZE / 2
-      return `linear-gradient(to right, transparent ${edge}px, black ${edge + 2}px)`
-    })
+    const stepDotsMaskSingle = useTransform(
+      motionX0,
+      (x) => {
+        const edge = x + THUMB_SIZE / 2;
+        return `linear-gradient(to right, transparent ${edge}px, black ${edge + 2}px)`;
+      }
+    );
     const stepDotsMaskRange = useTransform(
       [motionX0, motionX1] as MotionValue<number>[],
       ([x0, x1]) => {
-        const left = (x0 as number) + THUMB_SIZE / 2
-        const right = (x1 as number) + THUMB_SIZE / 2
-        return `linear-gradient(to right, black ${left - 2}px, transparent ${left}px, transparent ${right}px, black ${right + 2}px)`
+        const left = (x0 as number) + THUMB_SIZE / 2;
+        const right = (x1 as number) + THUMB_SIZE / 2;
+        return `linear-gradient(to right, black ${left - 2}px, transparent ${left}px, transparent ${right}px, black ${right + 2}px)`;
       }
-    )
-    const stepDotsMask = isRange ? stepDotsMaskRange : stepDotsMaskSingle
+    );
+    const stepDotsMask = isRange ? stepDotsMaskRange : stepDotsMaskSingle;
 
     // --- Hover preview computation ---
     const computeHoverPreview = useCallback(
@@ -402,266 +398,282 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
         // cursorX and trackWidth are in layout space (offsetWidth-relative),
         // unaffected by ancestor CSS transforms. THUMB_SIZE / TRACK_INSET are
         // also layout-space, so the math below is consistent end-to-end.
-        const usable = trackWidth - THUMB_SIZE
-        const rawPx = cursorX - THUMB_SIZE / 2
-        const clampedPx = Math.max(0, Math.min(usable, rawPx))
-        const rawVal =
-          usable > 0 ? (clampedPx / usable) * (max - min) + min : min
+        const usable = trackWidth - THUMB_SIZE;
+        const rawPx = cursorX - THUMB_SIZE / 2;
+        const clampedPx = Math.max(0, Math.min(usable, rawPx));
+        const rawVal = usable > 0 ? (clampedPx / usable) * (max - min) + min : min;
         const snappedVal = Math.max(
           min,
           Math.min(max, Math.round((rawVal - min) / step) * step + min)
-        )
-        const snappedPercent =
-          max === min ? 0 : (snappedVal - min) / (max - min)
-        const snappedX = THUMB_SIZE / 2 + snappedPercent * usable
+        );
+        const snappedPercent = max === min ? 0 : (snappedVal - min) / (max - min);
+        const snappedX = THUMB_SIZE / 2 + snappedPercent * usable;
 
         // Find nearest thumb center
-        const c0 = motionX0.get() + THUMB_SIZE / 2
-        const c1 = motionX1.get() + THUMB_SIZE / 2
+        const c0 = motionX0.get() + THUMB_SIZE / 2;
+        const c1 = motionX1.get() + THUMB_SIZE / 2;
         const nearestIdx = isRange
-          ? Math.abs(snappedX - c0) <= Math.abs(snappedX - c1)
-            ? 0
-            : 1
-          : 0
-        const nearest = nearestIdx === 0 ? c0 : c1
+          ? (Math.abs(snappedX - c0) <= Math.abs(snappedX - c1) ? 0 : 1)
+          : 0;
+        const nearest = nearestIdx === 0 ? c0 : c1;
 
         // Extend hover bar to track edges at extremes so there's no gap
-        const edgeX =
-          snappedVal === min ? 0 : snappedVal === max ? trackWidth : snappedX
-        const left = Math.min(nearest, edgeX)
-        const width = Math.abs(edgeX - nearest)
-        setHoverPreview({
-          left,
-          width,
-          snappedValue: snappedVal,
-          cursorX: snappedX,
-        })
+        const edgeX = snappedVal === min ? 0 : snappedVal === max ? trackWidth : snappedX;
+        const left = Math.min(nearest, edgeX);
+        const width = Math.abs(edgeX - nearest);
+        setHoverPreview({ left, width, snappedValue: snappedVal, cursorX: snappedX });
       },
       [min, max, step, isRange, motionX0, motionX1]
-    )
+    );
 
     // --- Initial sync (before paint) ---
-    const initialSyncDone = useRef(false)
-    const [ready, setReady] = useState(false)
+    const initialSyncDone = useRef(false);
+    const [ready, setReady] = useState(false);
     useLayoutEffect(() => {
-      const el = trackRef.current
-      if (!el || initialSyncDone.current) return
-      const w = el.offsetWidth
-      trackWidthRef.current = w
-      const px0 = valueToPixel(values[0], min, max, w)
-      motionX0.set(px0)
+      const el = trackRef.current;
+      if (!el || initialSyncDone.current) return;
+      const w = el.offsetWidth;
+      trackWidthRef.current = w;
+      const px0 = valueToPixel(values[0], min, max, w);
+      motionX0.set(px0);
       if (isRange && values[1] !== undefined) {
-        const px1 = valueToPixel(values[1], min, max, w)
-        motionX1.set(px1)
+        const px1 = valueToPixel(values[1], min, max, w);
+        motionX1.set(px1);
       }
-      initialSyncDone.current = true
-      setReady(true)
-    }, [])
+      initialSyncDone.current = true;
+      setReady(true);
+    }, []);
 
     // --- Track width measurement (resize only) ---
     useEffect(() => {
-      const el = trackRef.current
-      if (!el) return
+      const el = trackRef.current;
+      if (!el) return;
       const ro = new ResizeObserver(([entry]) => {
-        const w = entry.contentRect.width
-        trackWidthRef.current = w
+        const w = entry.contentRect.width;
+        trackWidthRef.current = w;
         if (!dragging.current && initialSyncDone.current) {
-          const v = valuesRef.current
-          const mn = minRef.current
-          const mx = maxRef.current
-          const px0 = valueToPixel(v[0], mn, mx, w)
-          motionX0.set(px0)
+          const v = valuesRef.current;
+          const mn = minRef.current;
+          const mx = maxRef.current;
+          const px0 = valueToPixel(v[0], mn, mx, w);
+          animate(motionX0, px0, spring.moderate);
           if (isRange && v[1] !== undefined) {
-            const px1 = valueToPixel(v[1], mn, mx, w)
-            motionX1.set(px1)
+            const px1 = valueToPixel(v[1], mn, mx, w);
+            animate(motionX1, px1, spring.moderate);
           }
         }
-      })
-      ro.observe(el)
-      return () => ro.disconnect()
-    }, [isRange, motionX0, motionX1])
+      });
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [isRange, motionX0, motionX1]);
 
     // --- Sync motion values on value change (keyboard, programmatic) ---
     // Depend on a primitive key rather than the `values` array — its identity
     // changes every render (toRadixValue allocates), which would restart the
     // animation on unrelated re-renders (hover/tooltip state churn).
-    const valuesKey = values.join(",")
+    const valuesKey = values.join(",");
     useEffect(() => {
-      if (!initialSyncDone.current) return
-      if (dragging.current) return
-      const tw = trackWidthRef.current
-      if (tw <= 0) return
-      const v = valuesRef.current
-      const px0 = valueToPixel(v[0], min, max, tw)
-      motionX0.set(px0)
+      if (!initialSyncDone.current) return;
+      if (dragging.current) return;
+      const tw = trackWidthRef.current;
+      if (tw <= 0) return;
+      const v = valuesRef.current;
+      const px0 = valueToPixel(v[0], min, max, tw);
+      animate(motionX0, px0, spring.moderate);
       if (isRange && v[1] !== undefined) {
-        const px1 = valueToPixel(v[1], min, max, tw)
-        motionX1.set(px1)
+        const px1 = valueToPixel(v[1], min, max, tw);
+        animate(motionX1, px1, spring.moderate);
       }
-    }, [valuesKey, min, max, isRange, motionX0, motionX1])
+    }, [valuesKey, min, max, isRange, motionX0, motionX1]);
 
     // --- Range crossing prevention ---
     const clampForRange = useCallback(
       (px: number, thumbIndex: number): number => {
-        if (!isRange) return px
+        if (!isRange) return px;
         if (thumbIndex === 0) {
-          return Math.min(px, motionX1.get() - THUMB_SIZE * 0.5)
+          return Math.min(px, motionX1.get() - THUMB_SIZE * 0.5);
         } else {
-          return Math.max(px, motionX0.get() + THUMB_SIZE * 0.5)
+          return Math.max(px, motionX0.get() + THUMB_SIZE * 0.5);
         }
       },
       [isRange, motionX0, motionX1]
-    )
+    );
 
     // --- Emit value change ---
     const emitChange = useCallback(
       (thumbIndex: number, newValue: number) => {
         if (isRange) {
-          const newValues: [number, number] = [...(values as [number, number])]
-          newValues[thumbIndex] = newValue
-          valuesRef.current = newValues
-          onChange(newValues)
+          const newValues: [number, number] = [...(values as [number, number])];
+          newValues[thumbIndex] = newValue;
+          onChange(newValues);
         } else {
-          valuesRef.current = [newValue]
-          onChange(newValue)
+          onChange(newValue);
         }
       },
       [isRange, values, onChange]
-    )
+    );
 
     // --- Pointer handlers on track ---
     const handlePointerDown = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (disabled) return
-        if (e.pointerType === "mouse" && e.button !== 0) return
-        e.preventDefault()
-        e.stopPropagation() // Prevent Radix from also handling the drag
+        if (disabled) return;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation(); // Prevent Radix from also handling the drag
 
-        const trackEl = trackRef.current
-        if (!trackEl) return
-        const trackRect = trackEl.getBoundingClientRect()
-        const layoutWidth = trackEl.offsetWidth
-        if (layoutWidth <= 0 || trackRect.width <= 0) return
+        const trackEl = trackRef.current;
+        if (!trackEl) return;
+        const trackRect = trackEl.getBoundingClientRect();
+        const layoutWidth = trackEl.offsetWidth;
+        if (layoutWidth <= 0 || trackRect.width <= 0) return;
         // Normalize cursor to layout space so it matches motionX (which is
         // rendered as a CSS-pixel transform), even under ancestor CSS scale.
-        const scale = trackRect.width / layoutWidth
-        const localX = (e.clientX - trackRect.left) / scale - THUMB_SIZE / 2
-        const clamped = Math.max(0, Math.min(layoutWidth - THUMB_SIZE, localX))
+        const scale = trackRect.width / layoutWidth;
+        const localX = (e.clientX - trackRect.left) / scale - THUMB_SIZE / 2;
+        const clamped = Math.max(
+          0,
+          Math.min(layoutWidth - THUMB_SIZE, localX)
+        );
 
         // Determine which thumb to drag
         if (isRange) {
-          const dist0 = Math.abs(clamped - motionX0.get())
-          const dist1 = Math.abs(clamped - motionX1.get())
-          activeDragThumb.current = dist0 <= dist1 ? 0 : 1
+          const dist0 = Math.abs(clamped - motionX0.get());
+          const dist1 = Math.abs(clamped - motionX1.get());
+          activeDragThumb.current = dist0 <= dist1 ? 0 : 1;
         } else {
-          activeDragThumb.current = 0
+          activeDragThumb.current = 0;
         }
 
-        dragging.current = true
-        setIsPressed(true)
+        dragging.current = true;
+        setIsPressed(true);
 
-        const motionX = activeDragThumb.current === 0 ? motionX0 : motionX1
+        const motionX =
+          activeDragThumb.current === 0 ? motionX0 : motionX1;
 
         // Snap to step grid immediately
-        const snappedValue = pixelToValue(clamped, min, max, step, layoutWidth)
-        const snappedPx = valueToPixel(snappedValue, min, max, layoutWidth)
+        const snappedValue = pixelToValue(
+          clamped,
+          min,
+          max,
+          step,
+          layoutWidth
+        );
+        const snappedPx = valueToPixel(snappedValue, min, max, layoutWidth);
 
         // Clamp for range crossing
-        const finalPx = clampForRange(snappedPx, activeDragThumb.current)
-        motionX.set(finalPx)
+        const finalPx = clampForRange(
+          snappedPx,
+          activeDragThumb.current
+        );
+        // Spring-animate thumb to clicked position
+        animate(motionX, finalPx, spring.moderate);
 
         // Update value
-        const finalValue = pixelToValue(finalPx, min, max, step, layoutWidth)
-        emitChange(activeDragThumb.current, finalValue)
+        const finalValue = pixelToValue(
+          finalPx,
+          min,
+          max,
+          step,
+          layoutWidth
+        );
+        emitChange(activeDragThumb.current, finalValue);
 
-        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       },
-      [
-        disabled,
-        isRange,
-        min,
-        max,
-        step,
-        motionX0,
-        motionX1,
-        clampForRange,
-        emitChange,
-      ]
-    )
+      [disabled, isRange, min, max, step, motionX0, motionX1, clampForRange, emitChange]
+    );
 
     const handlePointerMove = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (!dragging.current) return
-        e.stopPropagation()
-        const trackEl = trackRef.current
-        if (!trackEl) return
-        const trackRect = trackEl.getBoundingClientRect()
-        const layoutWidth = trackEl.offsetWidth
-        if (layoutWidth <= 0 || trackRect.width <= 0) return
-        const scale = trackRect.width / layoutWidth
-        const localX = (e.clientX - trackRect.left) / scale - THUMB_SIZE / 2
-        const clamped = Math.max(0, Math.min(layoutWidth - THUMB_SIZE, localX))
+        if (!dragging.current) return;
+        e.stopPropagation();
+        const trackEl = trackRef.current;
+        if (!trackEl) return;
+        const trackRect = trackEl.getBoundingClientRect();
+        const layoutWidth = trackEl.offsetWidth;
+        if (layoutWidth <= 0 || trackRect.width <= 0) return;
+        const scale = trackRect.width / layoutWidth;
+        const localX = (e.clientX - trackRect.left) / scale - THUMB_SIZE / 2;
+        const clamped = Math.max(
+          0,
+          Math.min(layoutWidth - THUMB_SIZE, localX)
+        );
 
-        const motionX = activeDragThumb.current === 0 ? motionX0 : motionX1
+        const motionX =
+          activeDragThumb.current === 0 ? motionX0 : motionX1;
 
         // Snap to step grid during drag
-        const snappedValue = pixelToValue(clamped, min, max, step, layoutWidth)
-        const snappedPx = valueToPixel(snappedValue, min, max, layoutWidth)
-        const finalPx = clampForRange(snappedPx, activeDragThumb.current)
-        motionX.set(finalPx)
+        const snappedValue = pixelToValue(
+          clamped,
+          min,
+          max,
+          step,
+          layoutWidth
+        );
+        const snappedPx = valueToPixel(snappedValue, min, max, layoutWidth);
+        const finalPx = clampForRange(
+          snappedPx,
+          activeDragThumb.current
+        );
+        motionX.set(finalPx);
 
-        const finalValue = pixelToValue(finalPx, min, max, step, layoutWidth)
-        emitChange(activeDragThumb.current, finalValue)
+        const finalValue = pixelToValue(
+          finalPx,
+          min,
+          max,
+          step,
+          layoutWidth
+        );
+        emitChange(activeDragThumb.current, finalValue);
       },
       [min, max, step, motionX0, motionX1, clampForRange, emitChange]
-    )
+    );
 
     const handlePointerUp = useCallback(() => {
-      if (!dragging.current) return
-      dragging.current = false
-      setIsPressed(false)
-      setHoverPreview(null)
+      if (!dragging.current) return;
+      dragging.current = false;
+      setIsPressed(false);
+      setHoverPreview(null);
 
       // Spring settle to final quantized position
-      const tw = trackWidthRef.current
-      const motionX = activeDragThumb.current === 0 ? motionX0 : motionX1
-      const currentPx = motionX.get()
-      const snapped = pixelToValue(currentPx, min, max, step, tw)
-      const snappedPx = valueToPixel(snapped, min, max, tw)
-      motionX.set(snappedPx)
-    }, [min, max, step, motionX0, motionX1])
+      const tw = trackWidthRef.current;
+      const motionX =
+        activeDragThumb.current === 0 ? motionX0 : motionX1;
+      const currentPx = motionX.get();
+      const snapped = pixelToValue(currentPx, min, max, step, tw);
+      const snappedPx = valueToPixel(snapped, min, max, tw);
+      animate(motionX, snappedPx, spring.moderate);
+    }, [min, max, step, motionX0, motionX1]);
 
     // --- Radix keyboard handler ---
     const handleRadixChange = useCallback(
       (newValues: number[]) => {
-        if (dragging.current) return
+        if (dragging.current) return;
         if (isRange) {
-          valuesRef.current = newValues
-          onChange(newValues as [number, number])
+          onChange(newValues as [number, number]);
         } else {
-          valuesRef.current = [newValues[0]]
-          onChange(newValues[0])
+          onChange(newValues[0]);
         }
       },
       [isRange, onChange]
-    )
+    );
 
     // --- Click-to-edit handlers ---
     const handleStartEdit = useCallback((index: number) => {
-      setEditingIndex(index)
-    }, [])
+      setEditingIndex(index);
+    }, []);
 
     const handleCommitEdit = useCallback(
       (index: number, v: number) => {
-        emitChange(index, v)
-        setEditingIndex(null)
+        emitChange(index, v);
+        setEditingIndex(null);
       },
       [emitChange]
-    )
+    );
 
     const handleCancelEdit = useCallback(() => {
-      setEditingIndex(null)
-    }, [])
+      setEditingIndex(null);
+    }, []);
 
     // --- Step dots ---
     const stepDots = useMemo(
@@ -670,26 +682,26 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
           ? Array.from(
               { length: Math.round((max - min) / step) + 1 },
               (_, i) => {
-                const v = min + i * step
-                const percent = (v - min) / (max - min)
-                return { value: v, percent }
+                const v = min + i * step;
+                const percent = (v - min) / (max - min);
+                return { value: v, percent };
               }
             )
           : [],
       [showSteps, min, max, step]
-    )
+    );
 
     // --- Interaction state for tooltip ---
-    const isInteracting = isHovered || isPressed
+    const isInteracting = isHovered || isPressed;
 
     // --- Per-thumb accessible names ---
-    // aria-label on Root lands on a role-less span and never reaches the
-    // thumb (which carries role="slider"), so each Thumb gets its own label.
+    // aria-label on Root lands on a role-less div and never reaches the
+    // thumb's input, so each Thumb gets its own label.
     const thumbAriaLabel = (index: number): string | undefined => {
-      if (!isRange) return label
-      if (!label) return index === 0 ? "Minimum" : "Maximum"
-      return index === 0 ? `${label} minimum` : `${label} maximum`
-    }
+      if (!isRange) return label;
+      if (!label) return index === 0 ? "Minimum" : "Maximum";
+      return index === 0 ? `${label} minimum` : `${label} maximum`;
+    };
 
     // --- Value display component ---
     const valueDisplay = showValue && valuePosition !== "tooltip" && (
@@ -707,15 +719,15 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
         isRange={isRange}
         isInteracting={isInteracting}
       />
-    )
+    );
 
     // --- Render visual thumb (not Radix — purely visual) ---
     const renderVisualThumb = (index: number) => {
-      const motionX = index === 0 ? motionX0 : motionX1
+      const motionX = index === 0 ? motionX0 : motionX1;
       return (
         <motion.span
           key={`visual-thumb-${index}`}
-          className="pointer-events-none flex items-center justify-center"
+          className="flex items-center justify-center pointer-events-none"
           style={{
             width: THUMB_SIZE,
             height: THUMB_SIZE,
@@ -739,14 +751,12 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             style={{
               backgroundColor: thumbColor ?? "white",
               boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
-              border: thumbBorderColor
-                ? `1px solid ${thumbBorderColor}`
-                : undefined,
+              border: thumbBorderColor ? `1px solid ${thumbBorderColor}` : undefined,
             }}
           />
           {/* Focus ring */}
           <motion.span
-            className="pointer-events-none absolute rounded-full border border-[color:var(--focus-ring,#6B97FF)]"
+            className="absolute rounded-full border border-[color:var(--focus-ring,#6B97FF)] pointer-events-none"
             initial={false}
             animate={{
               opacity: focusedThumb === index ? 1 : 0,
@@ -756,18 +766,18 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             transition={spring.fast}
           />
         </motion.span>
-      )
-    }
+      );
+    };
 
     return (
       <div
         ref={ref}
         className={cn(
-          "flex w-full touch-none flex-col gap-0 overflow-visible select-none",
+          "flex flex-col gap-0 w-full select-none touch-none overflow-visible",
           valuePosition === "left" || valuePosition === "right"
-            ? "mb-2 flex-row items-center gap-2"
+            ? "flex-row items-center gap-2 mb-2"
             : "flex-col",
-          disabled && "pointer-events-none opacity-50",
+          disabled && "opacity-50 pointer-events-none",
           className
         )}
         {...props}
@@ -779,30 +789,29 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
         <div
           className="relative flex-1 overflow-visible"
           style={{
-            height:
-              valuePosition === "left" || valuePosition === "right"
-                ? THUMB_SIZE + 16
-                : THUMB_SIZE + 16,
+            height: THUMB_SIZE + 16,
+            paddingTop:
+              showValue && valuePosition === "tooltip" ? 16 : 0,
           }}
           onPointerEnter={() => setIsHovered(true)}
           onPointerLeave={() => {
-            setIsHovered(false)
-            setHoverPreview(null)
+            setIsHovered(false);
+            setHoverPreview(null);
           }}
           onMouseMove={(e) => {
-            if (dragging.current) return
-            const trackEl = trackRef.current
-            if (!trackEl) return
-            const trackRect = trackEl.getBoundingClientRect()
-            const layoutWidth = trackEl.offsetWidth
-            if (layoutWidth <= 0 || trackRect.width <= 0) return
+            if (dragging.current) return;
+            const trackEl = trackRef.current;
+            if (!trackEl) return;
+            const trackRect = trackEl.getBoundingClientRect();
+            const layoutWidth = trackEl.offsetWidth;
+            if (layoutWidth <= 0 || trackRect.width <= 0) return;
             // Normalize to layout space so the formula's THUMB_SIZE / TRACK_INSET
             // constants (layout px) match the cursor's coordinate space, even
             // when an ancestor applies a CSS scale transform (e.g. /demo).
-            const scale = trackRect.width / layoutWidth
-            const layoutX = (e.clientX - trackRect.left) / scale
-            const clamped = Math.max(0, Math.min(layoutWidth, layoutX))
-            computeHoverPreview(clamped, layoutWidth)
+            const scale = trackRect.width / layoutWidth;
+            const layoutX = (e.clientX - trackRect.left) / scale;
+            const clamped = Math.max(0, Math.min(layoutWidth, layoutX));
+            computeHoverPreview(clamped, layoutWidth);
           }}
         >
           {/* Tooltip values */}
@@ -827,46 +836,40 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             </AnimatePresence>
           )}
 
-          {/* Radix Slider — invisible, provides ARIA + keyboard nav */}
+          {/* Base UI Slider — invisible, provides ARIA + keyboard nav */}
           <SliderPrimitive.Root
             value={values}
-            onValueChange={handleRadixChange}
+            onValueChange={(v) => handleRadixChange(v as number[])}
             min={min}
             max={max}
             step={step}
             disabled={disabled}
-            className="pointer-events-none absolute inset-0 opacity-0"
+            className="absolute inset-0 opacity-0 pointer-events-none"
             style={{ height: THUMB_SIZE }}
           >
-            <SliderPrimitive.Track className="h-full w-full">
-              <SliderPrimitive.Range />
-            </SliderPrimitive.Track>
-            <SliderPrimitive.Thumb
-              aria-label={thumbAriaLabel(0)}
-              className="block outline-none"
-              style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
-              onFocus={(e) => {
-                if (e.currentTarget.matches(":focus-visible"))
-                  setFocusedThumb(0)
-              }}
-              onBlur={() =>
-                setFocusedThumb((prev) => (prev === 0 ? null : prev))
-              }
-            />
-            {isRange && (
+            <SliderPrimitive.Control className="w-full h-full">
+              <SliderPrimitive.Track className="w-full h-full">
+                <SliderPrimitive.Indicator />
+              </SliderPrimitive.Track>
               <SliderPrimitive.Thumb
-                aria-label={thumbAriaLabel(1)}
+                index={0}
+                aria-label={thumbAriaLabel(0)}
                 className="block outline-none"
                 style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
-                onFocus={(e) => {
-                  if (e.currentTarget.matches(":focus-visible"))
-                    setFocusedThumb(1)
-                }}
-                onBlur={() =>
-                  setFocusedThumb((prev) => (prev === 1 ? null : prev))
-                }
+                onFocus={(e) => { if ((e.currentTarget as HTMLElement).matches(":focus-visible")) setFocusedThumb(0); }}
+                onBlur={() => setFocusedThumb((prev) => prev === 0 ? null : prev)}
               />
-            )}
+              {isRange && (
+                <SliderPrimitive.Thumb
+                  index={1}
+                  aria-label={thumbAriaLabel(1)}
+                  className="block outline-none"
+                  style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+                  onFocus={(e) => { if ((e.currentTarget as HTMLElement).matches(":focus-visible")) setFocusedThumb(1); }}
+                  onBlur={() => setFocusedThumb((prev) => prev === 1 ? null : prev)}
+                />
+              )}
+            </SliderPrimitive.Control>
           </SliderPrimitive.Root>
 
           {/* Visual track with pointer handlers */}
@@ -890,41 +893,32 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             />
             {/* Hover value tooltip */}
             <AnimatePresence>
-              {hoverPreview &&
-                showHoverTooltip &&
-                !isPressed &&
-                valuePosition !== "tooltip" && (
-                  <motion.div
-                    key="hover-tooltip"
-                    className="pointer-events-none absolute z-20 -translate-x-1/2"
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 4, transition: spring.fast.exit }}
-                    transition={spring.fast}
-                    style={{
-                      left: hoverPreview.cursorX,
-                      top: -20,
-                    }}
+              {hoverPreview && showHoverTooltip && !isPressed && valuePosition !== "tooltip" && (
+                <motion.div
+                  key="hover-tooltip"
+                  className="absolute -translate-x-1/2 pointer-events-none z-20"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4, transition: spring.fast.exit }}
+                  transition={spring.fast}
+                  style={{
+                    left: hoverPreview.cursorX,
+                    top: -20,
+                  }}
+                >
+                  <span
+                    className={cn("text-[12px] text-background tabular-nums whitespace-nowrap bg-foreground px-2 py-1", shape.bg)}
+                    style={{ fontVariationSettings: fontWeights.medium }}
                   >
-                    <span
-                      className={cn(
-                        "bg-foreground px-2 py-1 text-[12px] whitespace-nowrap text-background tabular-nums",
-                        shape.bg
-                      )}
-                      style={{ fontVariationSettings: fontWeights.medium }}
-                    >
-                      {formatValue(hoverPreview.snappedValue)}
-                    </span>
-                  </motion.div>
-                )}
+                    {formatValue(hoverPreview.snappedValue)}
+                  </span>
+                </motion.div>
+              )}
             </AnimatePresence>
 
             {/* Track background */}
             <motion.div
-              className={cn(
-                "absolute overflow-hidden rounded-full border border-border",
-                trackClassName
-              )}
+              className={cn("absolute border border-border overflow-hidden rounded-full", trackClassName)}
               initial={false}
               animate={{
                 height: TRACK_BG_HEIGHT,
@@ -940,22 +934,19 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
             >
               {/* Filled range */}
               {!hideFill && (
-                <motion.div
-                  className={cn(
-                    "absolute h-full bg-selected/60 dark:bg-selected/70",
-                    fillClassName
-                  )}
-                  style={{
-                    left: fillLeft,
-                    width: fillWidth,
-                    ...fillStyle,
-                  }}
-                />
+              <motion.div
+                className={cn("absolute h-full bg-selected/50 dark:bg-accent/40", fillClassName)}
+                style={{
+                  left: fillLeft,
+                  width: fillWidth,
+                  ...fillStyle,
+                }}
+              />
               )}
 
               {/* Hover preview */}
               <motion.div
-                className="pointer-events-none absolute z-[2] h-full"
+                className="absolute h-full pointer-events-none z-[2]"
                 initial={false}
                 animate={{
                   opacity: hoverPreview && !isPressed ? 1 : 0,
@@ -966,20 +957,19 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
                 style={{
                   left: hoverPreview ? hoverPreview.left - TRACK_INSET : 0,
                   width: hoverPreview ? hoverPreview.width : 0,
-                  borderRadius:
-                    hoverPreview && hoverPreview.cursorX > hoverPreview.left
-                      ? "0 9999px 9999px 0"
-                      : "9999px 0 0 9999px",
-                  backgroundColor:
-                    "color-mix(in srgb, var(--color-accent) 40%, transparent)",
+                  borderRadius: hoverPreview && hoverPreview.cursorX > hoverPreview.left
+                    ? "0 9999px 9999px 0"
+                    : "9999px 0 0 9999px",
+                  backgroundColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)",
                 }}
               />
+
             </motion.div>
 
             {/* Step dots — masked so filled side is hidden */}
             {stepDots.length > 0 && (
               <motion.div
-                className="pointer-events-none absolute right-0 left-0"
+                className="absolute left-0 right-0 pointer-events-none"
                 style={{
                   top: 8 + (THUMB_SIZE - TRACK_BG_HEIGHT) / 2,
                   height: TRACK_BG_HEIGHT,
@@ -990,7 +980,7 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
                 {stepDots.map(({ value: v, percent }) => (
                   <div
                     key={v}
-                    className="pointer-events-none absolute flex items-center justify-center"
+                    className="absolute pointer-events-none flex items-center justify-center"
                     style={{
                       left: `calc(${THUMB_SIZE / 2}px + ${percent} * (100% - ${THUMB_SIZE}px))`,
                       top: "50%",
@@ -999,7 +989,7 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
                     }}
                   >
                     <motion.div
-                      className="flex-shrink-0 rounded-full"
+                      className="rounded-full flex-shrink-0"
                       initial={false}
                       animate={{
                         width: isHovered ? DOT_SIZE * 1.25 : DOT_SIZE,
@@ -1026,35 +1016,28 @@ const Slider = forwardRef<HTMLDivElement, SliderProps>(
         {(valuePosition === "bottom" || valuePosition === "right") &&
           valueDisplay}
       </div>
-    )
+    );
   }
-)
+);
 
-Slider.displayName = "Slider"
+Slider.displayName = "Slider";
 
 // ---------------------------------------------------------------------------
 // SliderComfortable
 // ---------------------------------------------------------------------------
 
-interface SliderComfortableProps extends Omit<
-  HTMLAttributes<HTMLDivElement>,
-  | "onChange"
-  | "defaultValue"
-  | "onDrag"
-  | "onDragStart"
-  | "onDragEnd"
-  | "onDragOver"
-  | "onAnimationStart"
-> {
-  value: number
-  onChange: (value: number) => void
-  min?: number
-  max?: number
-  step?: number
-  variant?: "pips" | "scrubber"
-  label?: string
-  formatValue?: (v: number) => string
-  disabled?: boolean
+interface SliderComfortableProps
+  extends Omit<HTMLAttributes<HTMLDivElement>, "onChange" | "defaultValue" | "onDrag" | "onDragStart" | "onDragEnd" | "onDragOver" | "onAnimationStart"> {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  variant?: "pips" | "scrubber";
+  bordered?: boolean;
+  label?: string;
+  formatValue?: (v: number) => string;
+  disabled?: boolean;
 }
 
 const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
@@ -1066,6 +1049,7 @@ const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
       max = 100,
       step = 1,
       variant = "pips",
+      bordered = true,
       label,
       formatValue = String,
       disabled = false,
@@ -1074,337 +1058,261 @@ const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
     },
     ref
   ) => {
-    const containerRef = useRef<HTMLDivElement>(null)
-    const dragging = useRef(false)
-    const handleDragging = useRef(false)
-    const lastEmittedValueRef = useRef(value)
-    const [isHovered, setIsHovered] = useState(false)
-    const [isPressed, setIsPressed] = useState(false)
-    const [isFocused, setIsFocused] = useState(false)
+    const containerRef = useRef<HTMLDivElement>(null);
+    const dragging = useRef(false);
+    const handleDragging = useRef(false);
+    const [isHovered, setIsHovered] = useState(false);
+    const [isPressed, setIsPressed] = useState(false);
+    const [isFocused, setIsFocused] = useState(false);
     const [hoverPreview, setHoverPreview] = useState<{
-      left: number
-      width: number
-      snappedValue: number
-      cursorX: number
-    } | null>(null)
-    const [showHoverTooltip, setShowHoverTooltip] = useState(false)
-    const hoverDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    const shape = useShape()
+      left: number;
+      width: number;
+      snappedValue: number;
+      cursorX: number;
+    } | null>(null);
+    const [showHoverTooltip, setShowHoverTooltip] = useState(false);
+    const hoverDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const shape = useShape();
 
     // Show hover tooltip after 100ms delay
     useEffect(() => {
       if (isHovered) {
-        hoverDelayRef.current = setTimeout(() => setShowHoverTooltip(true), 100)
+        hoverDelayRef.current = setTimeout(() => setShowHoverTooltip(true), 100);
       } else {
-        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current)
-        setShowHoverTooltip(false)
+        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current);
+        setShowHoverTooltip(false);
       }
-      return () => {
-        if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current)
-      }
-    }, [isHovered])
+      return () => { if (hoverDelayRef.current) clearTimeout(hoverDelayRef.current); };
+    }, [isHovered]);
 
     const mergedRef = useCallback(
       (el: HTMLDivElement | null) => {
-        containerRef.current = el
-        if (typeof ref === "function")
-          (ref as React.RefCallback<HTMLDivElement>)(el)
-        else if (ref)
-          (ref as React.RefObject<HTMLDivElement | null>).current = el
+        containerRef.current = el;
+        if (typeof ref === "function") (ref as React.RefCallback<HTMLDivElement>)(el);
+        else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = el;
       },
       [ref]
-    )
+    );
 
     const pipSteps = useMemo(
-      () =>
-        Array.from(
-          { length: Math.round((max - min) / step) + 1 },
-          (_, i) => min + i * step
-        ),
+      () => Array.from(
+        { length: Math.round((max - min) / step) + 1 },
+        (_, i) => min + i * step
+      ),
       [min, max, step]
-    )
-    const pipCount = pipSteps.length
+    );
+    const pipCount = pipSteps.length;
 
     // Fill motion value
     const fillPercent = useMotionValue(
       max === min ? 0 : Math.max(0, Math.min(1, (value - min) / (max - min)))
-    )
+    );
     // Small offset when value is at min so the handle line stays visible
-    const zeroTarget = variant === "pips" ? 8 : 17
-    const zeroOffset = useMotionValue(value === min ? zeroTarget : 0)
+    const zeroTarget = variant === "pips" ? 8 : 17;
+    const zeroOffset = useMotionValue(value === min ? zeroTarget : 0);
 
-    const fillWidthStyle = useTransform(fillPercent, (p) => `${p * 100}%`)
+    const fillWidthStyle = useTransform(fillPercent, (p) => `${p * 100}%`);
     const handleLeftStyle = useTransform(
       [fillPercent, zeroOffset] as MotionValue<number>[],
       ([p, zo]) => `calc(${(p as number) * 100}% - 8px + ${zo as number}px)`
-    )
+    );
     const handleLineLeftStyle = useTransform(
       [fillPercent, zeroOffset] as MotionValue<number>[],
       ([p, zo]) => `calc(${(p as number) * 100}% - 9px + ${zo as number}px)`
-    )
+    );
     // Pips-specific: offset by px-3 (12px) padding so fill edge aligns with active pip center
     const pipsFillWidthStyle = useTransform(
       [fillPercent, zeroOffset] as MotionValue<number>[],
-      ([p, zo]) =>
-        `calc(${(p as number) * 100}% + ${20 - 20 * (p as number) - (zo as number) * 2.5}px)`
-    )
+      ([p, zo]) => `calc(${(p as number) * 100}% + ${20 - 20 * (p as number) - (zo as number) * 2.5}px)`
+    );
     const pipsHandleLineLeftStyle = useTransform(
       fillPercent,
       (p) => `calc(${p * 100}% + ${11 - 24 * p}px)`
-    )
+    );
     const pipsMaskStyle = useTransform(
       [fillPercent, zeroOffset] as MotionValue<number>[],
       ([p, zo]) => {
-        const offset = 20 - 20 * (p as number) - (zo as number) * 2.5
-        return `linear-gradient(to right, transparent calc(${(p as number) * 100}% + ${offset}px), black calc(${(p as number) * 100}% + ${offset + 2}px))`
+        const offset = 20 - 20 * (p as number) - (zo as number) * 2.5;
+        return `linear-gradient(to right, transparent calc(${(p as number) * 100}% + ${offset}px), black calc(${(p as number) * 100}% + ${offset + 2}px))`;
       }
-    )
+    );
 
     // --- Hover preview computation ---
     const computeHoverPreview = useCallback(
       (clientX: number) => {
-        const el = containerRef.current
-        if (!el) return
-        const rect = el.getBoundingClientRect()
+        const el = containerRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
         // Use clientWidth (padding box) — CSS % and absolute left/width are relative to it
-        const w = el.clientWidth
-        if (w <= 0 || rect.width <= 0) return
+        const w = el.clientWidth;
+        if (w <= 0 || rect.width <= 0) return;
         // Normalize cursor to layout space so it matches `w` (layout, padding
         // box). offsetWidth is the layout border-box; the difference vs `w` is
         // the horizontal border contribution split across both sides.
-        const scale = rect.width / el.offsetWidth
-        const borderLeftLayout = (el.offsetWidth - w) / 2
-        const visualX = clientX - rect.left
-        const layoutX = visualX / scale - borderLeftLayout
-        const clamped = Math.max(0, Math.min(w, layoutX))
+        const scale = rect.width / el.offsetWidth;
+        const borderLeftLayout = (el.offsetWidth - w) / 2;
+        const visualX = clientX - rect.left;
+        const layoutX = visualX / scale - borderLeftLayout;
+        const clamped = Math.max(0, Math.min(w, layoutX));
 
         // Snap to nearest step value
-        let snappedVal: number
+        let snappedVal: number;
         if (variant === "pips") {
-          if (pipCount <= 1) return
-          const index = Math.max(
-            0,
-            Math.min(pipCount - 1, Math.round((clamped / w) * (pipCount - 1)))
-          )
-          snappedVal = pipSteps[index]
+          if (pipCount <= 1) return;
+          const index = Math.max(0, Math.min(pipCount - 1, Math.round((clamped / w) * (pipCount - 1))));
+          snappedVal = pipSteps[index];
         } else {
-          const raw = min + (clamped / w) * (max - min)
-          snappedVal = Math.max(
-            min,
-            Math.min(max, Math.round((raw - min) / step) * step + min)
-          )
+          const raw = min + (clamped / w) * (max - min);
+          snappedVal = Math.max(min, Math.min(max, Math.round((raw - min) / step) * step + min));
         }
-        const snappedPercent =
-          max === min ? 0 : (snappedVal - min) / (max - min)
-        const snappedX = snappedPercent * w
+        const snappedPercent = max === min ? 0 : (snappedVal - min) / (max - min);
+        const snappedX = snappedPercent * w;
 
         // Current handle position — for pips, match the visual fill edge offset
-        const currentPercent = fillPercent.get()
-        let handleX: number
+        const currentPercent = fillPercent.get();
+        let handleX: number;
         if (variant === "pips") {
-          const zo = zeroOffset.get()
-          handleX = currentPercent * w + (20 - 20 * currentPercent - zo * 2.5)
+          const zo = zeroOffset.get();
+          handleX = currentPercent * w + (20 - 20 * currentPercent - zo * 2.5);
         } else {
-          handleX = currentPercent * w
+          handleX = currentPercent * w;
         }
 
         // Extend hover bar to container edges at extremes so there's no gap
-        const edgeX = snappedVal === min ? 0 : snappedVal === max ? w : snappedX
-        const left = Math.min(handleX, edgeX)
-        const width = Math.abs(edgeX - handleX)
-        setHoverPreview({
-          left,
-          width,
-          snappedValue: snappedVal,
-          cursorX: snappedX,
-        })
+        const edgeX = snappedVal === min ? 0 : snappedVal === max ? w : snappedX;
+        const left = Math.min(handleX, edgeX);
+        const width = Math.abs(edgeX - handleX);
+        setHoverPreview({ left, width, snappedValue: snappedVal, cursorX: snappedX });
       },
       [variant, pipSteps, pipCount, min, max, step, fillPercent, zeroOffset]
-    )
+    );
 
     // Sync fill on programmatic value change
     useEffect(() => {
-      if (dragging.current || handleDragging.current) return
-      const percent =
-        max === min ? 0 : Math.max(0, Math.min(1, (value - min) / (max - min)))
-      animate(fillPercent, percent, spring.fast)
-      animate(zeroOffset, value === min ? zeroTarget : 0, spring.fast)
-    }, [value, min, max, variant, fillPercent, zeroOffset, zeroTarget])
+      if (dragging.current || handleDragging.current) return;
+      const percent = max === min ? 0 : Math.max(0, Math.min(1, (value - min) / (max - min)));
+      animate(fillPercent, percent, spring.fast);
+      animate(zeroOffset, value === min ? zeroTarget : 0, spring.fast);
+    }, [value, min, max, variant, fillPercent, zeroOffset, zeroTarget]);
 
     const getValueFromX = useCallback(
       (clientX: number) => {
-        const rect = containerRef.current?.getBoundingClientRect()
-        if (!rect) return min
-        const x = clientX - rect.left
-        const clamped = Math.max(0, Math.min(rect.width, x))
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return min;
+        const x = clientX - rect.left;
+        const clamped = Math.max(0, Math.min(rect.width, x));
         if (variant === "pips") {
-          if (pipCount <= 1) return min
+          if (pipCount <= 1) return min;
           const index = Math.max(
             0,
-            Math.min(
-              pipCount - 1,
-              Math.round((clamped / rect.width) * (pipCount - 1))
-            )
-          )
-          return pipSteps[index]
+            Math.min(pipCount - 1, Math.round((clamped / rect.width) * (pipCount - 1)))
+          );
+          return pipSteps[index];
         } else {
-          const raw = min + (clamped / rect.width) * (max - min)
-          const snapped = Math.round((raw - min) / step) * step + min
-          return Math.max(min, Math.min(max, snapped))
+          const raw = min + (clamped / rect.width) * (max - min);
+          const snapped = Math.round((raw - min) / step) * step + min;
+          return Math.max(min, Math.min(max, snapped));
         }
       },
       [variant, pipSteps, pipCount, min, max, step]
-    )
-
-    useEffect(() => {
-      if (!dragging.current && !handleDragging.current) {
-        lastEmittedValueRef.current = value
-      }
-    }, [value])
-
-    const emitChange = useCallback(
-      (nextValue: number) => {
-        if (Object.is(lastEmittedValueRef.current, nextValue)) {
-          return
-        }
-
-        lastEmittedValueRef.current = nextValue
-        onChange(nextValue)
-      },
-      [onChange]
-    )
+    );
 
     const handlePointerDown = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (disabled) return
-        if (e.pointerType === "mouse" && e.button !== 0) return
-        e.preventDefault()
-        dragging.current = true
-        setIsPressed(true)
-        const newVal = getValueFromX(e.clientX)
-        emitChange(newVal)
-        const newPercent = Math.max(
-          0,
-          Math.min(1, (newVal - min) / (max - min))
-        )
-        animate(fillPercent, newPercent, spring.fast)
-        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast)
-        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        if (disabled) return;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        e.preventDefault();
+        dragging.current = true;
+        setIsPressed(true);
+        const newVal = getValueFromX(e.clientX);
+        onChange(newVal);
+        const newPercent = Math.max(0, Math.min(1, (newVal - min) / (max - min)));
+        animate(fillPercent, newPercent, spring.fast);
+        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast);
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       },
-      [
-        disabled,
-        getValueFromX,
-        emitChange,
-        fillPercent,
-        zeroOffset,
-        zeroTarget,
-        min,
-        max,
-      ]
-    )
+      [disabled, getValueFromX, onChange, fillPercent, zeroOffset, zeroTarget, min, max]
+    );
 
     const handlePointerMove = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (!dragging.current) return
-        const newVal = getValueFromX(e.clientX)
-        emitChange(newVal)
-        const newPercent = Math.max(
-          0,
-          Math.min(1, (newVal - min) / (max - min))
-        )
+        if (!dragging.current) return;
+        const newVal = getValueFromX(e.clientX);
+        onChange(newVal);
+        const newPercent = Math.max(0, Math.min(1, (newVal - min) / (max - min)));
         if (variant === "scrubber") {
-          fillPercent.set(newPercent)
+          fillPercent.set(newPercent);
         } else {
-          animate(fillPercent, newPercent, spring.fast)
+          animate(fillPercent, newPercent, spring.fast);
         }
-        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast)
+        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast);
       },
-      [
-        getValueFromX,
-        emitChange,
-        variant,
-        fillPercent,
-        zeroOffset,
-        zeroTarget,
-        min,
-        max,
-      ]
-    )
+      [getValueFromX, onChange, variant, fillPercent, zeroOffset, zeroTarget, min, max]
+    );
 
     const handlePointerUp = useCallback(() => {
-      dragging.current = false
-      setIsPressed(false)
-      setHoverPreview(null)
-    }, [])
+      dragging.current = false;
+      setIsPressed(false);
+      setHoverPreview(null);
+    }, []);
 
     // Resize handle drag handlers (direct cursor position)
     const handleResizePointerDown = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (disabled) return
-        if (e.pointerType === "mouse" && e.button !== 0) return
-        e.preventDefault()
-        e.stopPropagation()
-        handleDragging.current = true
-        setIsPressed(true)
-        const newVal = getValueFromX(e.clientX)
-        emitChange(newVal)
-        fillPercent.set(Math.max(0, Math.min(1, (newVal - min) / (max - min))))
-        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast)
-        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        if (disabled) return;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleDragging.current = true;
+        setIsPressed(true);
+        const newVal = getValueFromX(e.clientX);
+        onChange(newVal);
+        fillPercent.set(Math.max(0, Math.min(1, (newVal - min) / (max - min))));
+        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast);
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       },
-      [
-        disabled,
-        getValueFromX,
-        emitChange,
-        fillPercent,
-        zeroOffset,
-        zeroTarget,
-        min,
-        max,
-      ]
-    )
+      [disabled, getValueFromX, onChange, fillPercent, zeroOffset, zeroTarget, min, max]
+    );
 
     const handleResizePointerMove = useCallback(
       (e: React.PointerEvent<HTMLDivElement>) => {
-        if (!handleDragging.current) return
-        const newVal = getValueFromX(e.clientX)
-        emitChange(newVal)
-        fillPercent.set(Math.max(0, Math.min(1, (newVal - min) / (max - min))))
-        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast)
+        if (!handleDragging.current) return;
+        const newVal = getValueFromX(e.clientX);
+        onChange(newVal);
+        fillPercent.set(Math.max(0, Math.min(1, (newVal - min) / (max - min))));
+        animate(zeroOffset, newVal === min ? zeroTarget : 0, spring.fast);
       },
-      [getValueFromX, emitChange, fillPercent, zeroOffset, zeroTarget, min, max]
-    )
+      [getValueFromX, onChange, fillPercent, zeroOffset, zeroTarget, min, max]
+    );
 
     const handleResizePointerUp = useCallback(() => {
-      handleDragging.current = false
-      setIsPressed(false)
-      setHoverPreview(null)
-    }, [])
+      handleDragging.current = false;
+      setIsPressed(false);
+      setHoverPreview(null);
+    }, []);
 
     const handleRadixChange = useCallback(
       (newValues: number[]) => {
-        emitChange(newValues[0])
+        onChange(newValues[0]);
       },
-      [emitChange]
-    )
+      [onChange]
+    );
 
-    const isActive = isHovered || isFocused
+    const isActive = isHovered || isFocused;
 
     return (
       <div
         className="relative w-full touch-none"
-        onPointerEnter={() => {
-          if (!disabled) setIsHovered(true)
-        }}
+        onPointerEnter={() => { if (!disabled) setIsHovered(true); }}
         onPointerLeave={() => {
           if (!disabled) {
-            setIsHovered(false)
-            setHoverPreview(null)
+            setIsHovered(false);
+            setHoverPreview(null);
           }
         }}
         onMouseMove={(e) => {
-          if (disabled || dragging.current || handleDragging.current) return
-          computeHoverPreview(e.clientX)
+          if (disabled || dragging.current || handleDragging.current) return;
+          computeHoverPreview(e.clientX);
         }}
       >
         {/* Extended hit area — 8px beyond each edge */}
@@ -1421,7 +1329,7 @@ const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
           {hoverPreview && showHoverTooltip && !isPressed && (
             <motion.div
               key="hover-tooltip"
-              className="pointer-events-none absolute z-20 -translate-x-1/2"
+              className="absolute -translate-x-1/2 pointer-events-none z-20"
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 4, transition: spring.fast.exit }}
@@ -1432,10 +1340,7 @@ const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
               }}
             >
               <span
-                className={cn(
-                  "bg-foreground px-2 py-1 text-[12px] whitespace-nowrap text-background tabular-nums",
-                  shape.bg
-                )}
+                className={cn("text-[12px] text-background tabular-nums whitespace-nowrap bg-foreground px-2 py-1", shape.bg)}
                 style={{ fontVariationSettings: fontWeights.medium }}
               >
                 {formatValue(hoverPreview.snappedValue)}
@@ -1444,281 +1349,258 @@ const SliderComfortable = forwardRef<HTMLDivElement, SliderComfortableProps>(
           )}
         </AnimatePresence>
 
-        <motion.div
-          ref={mergedRef}
-          className={cn(
-            "relative h-8 w-full touch-none overflow-hidden border border-border outline-offset-2 select-none",
-            variant === "scrubber"
-              ? "flex cursor-ew-resize items-center gap-3 px-4"
-              : "cursor-ew-resize",
-            shape.bg,
-            disabled && "pointer-events-none opacity-50",
-            className
-          )}
-          initial={false}
-          animate={{
-            outline: isFocused
+      <motion.div
+        ref={mergedRef}
+        className={cn(
+          "relative w-full h-8 select-none touch-none overflow-hidden outline-offset-2",
+          bordered ? "border border-border" : "border-0",
+          !bordered && "bg-input/40",
+          variant === "scrubber"
+            ? "flex items-center gap-3 px-4 cursor-ew-resize"
+            : "cursor-ew-resize",
+          shape.bg,
+          disabled && "opacity-50 pointer-events-none",
+          className
+        )}
+        initial={false}
+        animate={{
+          outline:
+            bordered && isFocused
               ? "1px solid var(--focus-ring, #6B97FF)"
               : "1px solid transparent",
-          }}
-          transition={spring.fast}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          {...props}
+        }}
+        transition={spring.fast}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        {...props}
+      >
+        {/* Invisible Base UI Slider for keyboard nav + a11y */}
+        <SliderPrimitive.Root
+          value={[value]}
+          onValueChange={(v) => handleRadixChange(v as number[])}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+          className="absolute inset-0 opacity-0 pointer-events-none [&_*]:pointer-events-none"
         >
-          {/* Invisible Radix for keyboard nav + a11y */}
-          <SliderPrimitive.Root
-            value={[value]}
-            onValueChange={handleRadixChange}
-            min={min}
-            max={max}
-            step={step}
-            disabled={disabled}
-            className="pointer-events-none absolute inset-0 opacity-0 [&_*]:pointer-events-none"
-          >
-            <SliderPrimitive.Track className="h-full w-full">
-              <SliderPrimitive.Range />
+          <SliderPrimitive.Control className="w-full h-full">
+            <SliderPrimitive.Track className="w-full h-full">
+              <SliderPrimitive.Indicator />
             </SliderPrimitive.Track>
             <SliderPrimitive.Thumb
+              index={0}
               aria-label={label}
               className="block outline-none"
               onFocus={(e) => {
-                if (e.currentTarget.matches(":focus-visible"))
-                  setIsFocused(true)
+                if ((e.currentTarget as HTMLElement).matches(":focus-visible")) setIsFocused(true);
               }}
               onBlur={() => setIsFocused(false)}
             />
-          </SliderPrimitive.Root>
+          </SliderPrimitive.Control>
+        </SliderPrimitive.Root>
 
-          {/* Hover preview */}
+        {/* Hover preview */}
+        <motion.div
+          className="absolute inset-y-0 pointer-events-none z-[3]"
+          initial={false}
+          animate={{
+            opacity: hoverPreview && !isPressed ? 1 : 0,
+          }}
+          transition={{ opacity: { duration: 0.15 } }}
+          style={{
+            left: hoverPreview ? hoverPreview.left : 0,
+            width: hoverPreview ? hoverPreview.width : 0,
+            backgroundColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)",
+          }}
+        />
+
+        {/* Pips: dots layer — z-[1] */}
+        {variant === "pips" && (
           <motion.div
-            className="pointer-events-none absolute inset-y-0 z-[3]"
-            initial={false}
-            animate={{
-              opacity: hoverPreview && !isPressed ? 1 : 0,
-            }}
-            transition={{ opacity: { duration: 0.15 } }}
+            className="absolute inset-0 flex justify-between items-center px-3 pointer-events-none z-[1]"
+            style={{ WebkitMaskImage: pipsMaskStyle, maskImage: pipsMaskStyle }}
+          >
+            {pipSteps.map((pipValue) => {
+              const isActivePip = pipValue === value;
+              return (
+                <div
+                  key={pipValue}
+                  className="relative flex items-center justify-center"
+                  style={{ width: PIP_SIZE, height: PIP_SIZE }}
+                >
+                  <motion.div
+                    className="rounded-full"
+                    initial={false}
+                    animate={{
+                      backgroundColor: isActivePip ? "var(--foreground)" : "var(--muted-foreground)",
+                      opacity: isActivePip ? 1 : 0.3,
+                    }}
+                    transition={spring.fast}
+                    style={{ width: PIP_SIZE, height: PIP_SIZE }}
+                  />
+                </div>
+              );
+            })}
+          </motion.div>
+        )}
+
+        {/* Pips: label + value BG layer — z-[2] (occludes dots behind text) */}
+        {variant === "pips" && (
+          <div className="absolute inset-0 flex items-center px-2 z-[2] pointer-events-none" aria-hidden>
+            {label && (
+              <span className="text-[13px] px-2 bg-background text-transparent select-none">
+                {label}
+              </span>
+            )}
+            <span
+              className="text-[13px] tabular-nums ml-auto px-2 bg-background text-transparent select-none"
+              style={{ minWidth: `${String(formatValue(max)).length}ch` }}
+            >
+              {formatValue(value)}
+            </span>
+          </div>
+        )}
+
+        {/* Pips: fill — z-[3] */}
+        {variant === "pips" && (
+          <motion.div
+            className="absolute left-0 top-0 bottom-0 pointer-events-none z-[3]"
             style={{
-              left: hoverPreview ? hoverPreview.left : 0,
-              width: hoverPreview ? hoverPreview.width : 0,
-              backgroundColor:
-                "color-mix(in srgb, var(--color-accent) 40%, transparent)",
+              width: pipsFillWidthStyle,
+              backgroundColor: "var(--active)",
             }}
           />
+        )}
 
-          {/* Pips: dots layer — z-[1] */}
-          {variant === "pips" && (
-            <motion.div
-              className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-between px-3"
-              style={{
-                WebkitMaskImage: pipsMaskStyle,
-                maskImage: pipsMaskStyle,
-              }}
-            >
-              {pipSteps.map((pipValue) => {
-                const isActivePip = pipValue === value
-                return (
-                  <div
-                    key={pipValue}
-                    className="relative flex items-center justify-center"
-                    style={{ width: PIP_SIZE, height: PIP_SIZE }}
-                  >
-                    <motion.div
-                      className="rounded-full"
-                      initial={false}
-                      animate={{
-                        backgroundColor: isActivePip
-                          ? "var(--foreground)"
-                          : "var(--muted-foreground)",
-                        opacity: isActivePip ? 1 : 0.3,
-                      }}
-                      transition={spring.fast}
-                      style={{ width: PIP_SIZE, height: PIP_SIZE }}
-                    />
-                  </div>
-                )
-              })}
-            </motion.div>
-          )}
+        {/* Pips: handle line — z-[3] */}
+        {variant === "pips" && (
+          <motion.div
+            className="absolute rounded-full pointer-events-none z-[3]"
+            initial={false}
+            animate={{
+              top: isActive ? 7 : 8,
+              bottom: isActive ? 7 : 8,
+              backgroundColor: isFocused
+                ? "var(--foreground)"
+                : isHovered
+                ? "color-mix(in srgb, var(--foreground) 50%, transparent)"
+                : "color-mix(in srgb, var(--foreground) 25%, transparent)",
+            }}
+            transition={spring.fast}
+            style={{
+              left: pipsHandleLineLeftStyle,
+              width: 2,
+            }}
+          />
+        )}
 
-          {/* Pips: label + value BG layer — z-[2] (occludes dots behind text) */}
-          {variant === "pips" && (
-            <div
-              className="pointer-events-none absolute inset-0 z-[2] flex items-center px-2"
-              aria-hidden
-            >
-              {label && (
-                <span className="bg-background px-2 text-[13px] text-transparent select-none">
-                  {label}
-                </span>
-              )}
-              <span
-                className="ml-auto bg-background px-2 text-[13px] text-transparent tabular-nums select-none"
-                style={{ minWidth: `${String(formatValue(max)).length}ch` }}
-              >
-                {formatValue(value)}
-              </span>
-            </div>
-          )}
-
-          {/* Pips: fill — z-[3] */}
-          {variant === "pips" && (
-            <motion.div
-              className="pointer-events-none absolute top-0 bottom-0 left-0 z-[3]"
-              style={{
-                width: pipsFillWidthStyle,
-                backgroundColor: "var(--active)",
-              }}
-            />
-          )}
-
-          {/* Pips: handle line — z-[3] */}
-          {variant === "pips" && (
-            <motion.div
-              className="pointer-events-none absolute z-[3] rounded-full"
-              initial={false}
-              animate={{
-                top: isActive ? 7 : 8,
-                bottom: isActive ? 7 : 8,
-                backgroundColor: isFocused
-                  ? "var(--foreground)"
-                  : isHovered
-                    ? "color-mix(in srgb, var(--foreground) 50%, transparent)"
-                    : "color-mix(in srgb, var(--foreground) 25%, transparent)",
-              }}
-              transition={spring.fast}
-              style={{
-                left: pipsHandleLineLeftStyle,
-                width: 2,
-              }}
-            />
-          )}
-
-          {/* Pips: label + value text layer — z-[4] */}
-          {variant === "pips" && (
-            <div className="pointer-events-none absolute inset-0 z-[4] flex items-center px-2">
-              {label && (
-                <motion.span
-                  className="px-2 text-[13px]"
-                  initial={false}
-                  animate={{
-                    color: isActive
-                      ? "var(--foreground)"
-                      : "var(--muted-foreground)",
-                  }}
-                  transition={spring.fast}
-                >
-                  {label}
-                </motion.span>
-              )}
+        {/* Pips: label + value text layer — z-[4] */}
+        {variant === "pips" && (
+          <div className="absolute inset-0 flex items-center px-2 z-[4] pointer-events-none">
+            {label && (
               <motion.span
-                className="ml-auto px-2 text-[13px] tabular-nums"
+                className="text-[13px] px-2"
                 initial={false}
-                animate={{
-                  color: isActive
-                    ? "var(--foreground)"
-                    : "var(--muted-foreground)",
-                }}
+                animate={{ color: isActive ? "var(--foreground)" : "var(--muted-foreground)" }}
                 transition={spring.fast}
-                style={{
-                  minWidth: `${String(formatValue(max)).length}ch`,
-                  textAlign: "right",
-                }}
               >
-                {formatValue(value)}
+                {label}
               </motion.span>
-            </div>
-          )}
-
-          {/* Scrubber: fill */}
-          {variant === "scrubber" && (
-            <motion.div
-              className="pointer-events-none absolute top-0 bottom-0 left-0"
-              style={{
-                width: fillWidthStyle,
-                backgroundColor: "var(--active)",
-              }}
-            />
-          )}
-
-          {/* Scrubber: handle line */}
-          {variant === "scrubber" && (
-            <motion.div
-              className="pointer-events-none absolute z-10 rounded-full"
-              initial={false}
-              animate={{
-                top: isActive ? 7 : 8,
-                bottom: isActive ? 7 : 8,
-                backgroundColor: isFocused
-                  ? "var(--foreground)"
-                  : isHovered
-                    ? "color-mix(in srgb, var(--foreground) 50%, transparent)"
-                    : "color-mix(in srgb, var(--foreground) 25%, transparent)",
-              }}
-              transition={spring.fast}
-              style={{
-                left: handleLineLeftStyle,
-                width: 2,
-              }}
-            />
-          )}
-
-          {/* Scrubber: label */}
-          {variant === "scrubber" && label && (
+            )}
             <motion.span
-              className="z-10 shrink-0 text-[13px]"
+              className="text-[13px] tabular-nums ml-auto px-2"
               initial={false}
-              animate={{
-                color: isActive
-                  ? "var(--foreground)"
-                  : "var(--muted-foreground)",
-              }}
+              animate={{ color: isActive ? "var(--foreground)" : "var(--muted-foreground)" }}
               transition={spring.fast}
+              style={{ minWidth: `${String(formatValue(max)).length}ch`, textAlign: "right" }}
             >
-              {label}
+              {formatValue(value)}
             </motion.span>
-          )}
+          </div>
+        )}
 
-          {/* Scrubber: flex-1 spacer + value */}
-          {variant === "scrubber" && (
-            <>
-              <div className="flex-1" />
-              <motion.span
-                className="z-10 shrink-0 text-right text-[13px] tabular-nums"
-                initial={false}
-                animate={{
-                  color: isActive
-                    ? "var(--foreground)"
-                    : "var(--muted-foreground)",
-                }}
-                transition={spring.fast}
-                style={{ minWidth: `${String(formatValue(max)).length}ch` }}
-              >
-                {formatValue(value)}
-              </motion.span>
-            </>
-          )}
+        {/* Scrubber: fill */}
+        {variant === "scrubber" && (
+          <motion.div
+            className="absolute left-0 top-0 bottom-0 pointer-events-none"
+            style={{
+              width: fillWidthStyle,
+              backgroundColor: "var(--active)",
+            }}
+          />
+        )}
 
-          {/* Resize handle (scrubber only) */}
-          {variant === "scrubber" && (
-            <motion.div
-              className="absolute top-0 bottom-0 z-20 w-2 cursor-ew-resize"
-              style={{ left: handleLeftStyle }}
-              onPointerDown={handleResizePointerDown}
-              onPointerMove={handleResizePointerMove}
-              onPointerUp={handleResizePointerUp}
-              onPointerCancel={handleResizePointerUp}
-            />
-          )}
-        </motion.div>
+        {/* Scrubber: handle line */}
+        {variant === "scrubber" && (
+          <motion.div
+            className="absolute rounded-full pointer-events-none z-10"
+            initial={false}
+            animate={{
+              top: isActive ? 7 : 8,
+              bottom: isActive ? 7 : 8,
+              backgroundColor: isFocused
+                ? "var(--foreground)"
+                : isHovered
+                ? "color-mix(in srgb, var(--foreground) 50%, transparent)"
+                : "color-mix(in srgb, var(--foreground) 25%, transparent)",
+            }}
+            transition={spring.fast}
+            style={{
+              left: handleLineLeftStyle,
+              width: 2,
+            }}
+          />
+        )}
+
+        {/* Scrubber: label */}
+        {variant === "scrubber" && label && (
+          <motion.span
+            className="text-[13px] shrink-0 z-10"
+            initial={false}
+            animate={{ color: isActive ? "var(--foreground)" : "var(--muted-foreground)" }}
+            transition={spring.fast}
+          >
+            {label}
+          </motion.span>
+        )}
+
+        {/* Scrubber: flex-1 spacer + value */}
+        {variant === "scrubber" && (
+          <>
+            <div className="flex-1" />
+            <motion.span
+              className="text-[13px] shrink-0 tabular-nums text-right z-10"
+              initial={false}
+              animate={{ color: isActive ? "var(--foreground)" : "var(--muted-foreground)" }}
+              transition={spring.fast}
+              style={{ minWidth: `${String(formatValue(max)).length}ch` }}
+            >
+              {formatValue(value)}
+            </motion.span>
+          </>
+        )}
+
+        {/* Resize handle (scrubber only) */}
+        {variant === "scrubber" && (
+          <motion.div
+            className="absolute top-0 bottom-0 w-2 cursor-ew-resize z-20"
+            style={{ left: handleLeftStyle }}
+            onPointerDown={handleResizePointerDown}
+            onPointerMove={handleResizePointerMove}
+            onPointerUp={handleResizePointerUp}
+            onPointerCancel={handleResizePointerUp}
+          />
+        )}
+      </motion.div>
       </div>
-    )
+    );
   }
-)
+);
 
-SliderComfortable.displayName = "SliderComfortable"
+SliderComfortable.displayName = "SliderComfortable";
 
-export { Slider, SliderComfortable }
-export type { SliderProps, SliderValue, ValuePosition, SliderComfortableProps }
+export { Slider, SliderComfortable };
+export type { SliderProps, SliderValue, ValuePosition, SliderComfortableProps };

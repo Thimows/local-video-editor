@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import {
+  IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
   IconFileDownloadFilled as Download,
@@ -10,6 +11,7 @@ import {
   IconFileUploadFilled as Upload,
   IconFolderOpenFilled as FolderOpen,
   IconInfoCircleFilled as Info,
+  IconLink as LinkIcon,
   IconPlayerPauseFilled as Pause,
   IconPlayerPlayFilled as Play,
   IconPointerFilled as MousePointer2,
@@ -27,7 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { ThemeToggle } from "@/components/theme-toggle"
-import { exportProjectToWebM } from "@/lib/editor/export-webm"
+import { exportProjectToVideo } from "@/lib/editor/export-video"
 import {
   clearPreviewAudioDebug,
   createPreviewAudioContext,
@@ -60,6 +62,7 @@ import type {
   Selection,
   SourceAsset,
   TimelineClip,
+  ExportFormat,
 } from "@/lib/editor/types"
 import { Button } from "@workspace/ui/components/button"
 import {
@@ -73,6 +76,12 @@ import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
 import { Progress, ProgressLabel } from "@workspace/ui/components/progress"
 import { Slider } from "@workspace/ui/components/slider"
+import {
+  DropdownContent,
+  DropdownMenu,
+  DropdownTrigger,
+} from "@workspace/ui/components/ui/dropdown"
+import { MenuItem } from "@workspace/ui/components/ui/menu-item"
 import { SliderComfortable } from "@workspace/ui/components/ui/slider"
 import {
   TabsSubtle,
@@ -113,6 +122,71 @@ const MIN_TIMELINE_PANEL_HEIGHT = 160
 const MAX_TIMELINE_PANEL_HEIGHT = 420
 const RESIZE_GAP_SIZE = 12
 
+const ASPECT_RATIO_OPTIONS = [
+  {
+    label: "16:9",
+    value: "16:9",
+    width: 16,
+    height: 9,
+    resolutions: [
+      { label: "1920 x 1080", width: 1920, height: 1080 },
+      { label: "1280 x 720", width: 1280, height: 720 },
+      { label: "3840 x 2160", width: 3840, height: 2160 },
+    ],
+  },
+  {
+    label: "9:16",
+    value: "9:16",
+    width: 9,
+    height: 16,
+    resolutions: [
+      { label: "1080 x 1920", width: 1080, height: 1920 },
+      { label: "720 x 1280", width: 720, height: 1280 },
+      { label: "2160 x 3840", width: 2160, height: 3840 },
+    ],
+  },
+  {
+    label: "1:1",
+    value: "1:1",
+    width: 1,
+    height: 1,
+    resolutions: [
+      { label: "1080 x 1080", width: 1080, height: 1080 },
+      { label: "2048 x 2048", width: 2048, height: 2048 },
+    ],
+  },
+  {
+    label: "4:5",
+    value: "4:5",
+    width: 4,
+    height: 5,
+    resolutions: [
+      { label: "1080 x 1350", width: 1080, height: 1350 },
+      { label: "1440 x 1800", width: 1440, height: 1800 },
+    ],
+  },
+  {
+    label: "4:3",
+    value: "4:3",
+    width: 4,
+    height: 3,
+    resolutions: [
+      { label: "1440 x 1080", width: 1440, height: 1080 },
+      { label: "1024 x 768", width: 1024, height: 768 },
+    ],
+  },
+  {
+    label: "21:9",
+    value: "21:9",
+    width: 21,
+    height: 9,
+    resolutions: [
+      { label: "2560 x 1080", width: 2560, height: 1080 },
+      { label: "3440 x 1440", width: 3440, height: 1440 },
+    ],
+  },
+] as const
+
 type InspectorView = "project" | "selection" | "files"
 
 export function EditorClient() {
@@ -131,6 +205,7 @@ export function EditorClient() {
     progress: number
     message: string
     url?: string
+    extension?: ExportFormat
     controller?: AbortController
   }>({ progress: 0, message: "Idle" })
   const [inspectorWidth, setInspectorWidth] = useState(() =>
@@ -513,6 +588,9 @@ export function EditorClient() {
           sourceEndSeconds,
           timelineStartSeconds,
           trackIndex: desiredTrackIndex,
+          scale: 1,
+          positionX: 0,
+          positionY: 0,
           muted: false,
           volume: 1,
         })
@@ -906,15 +984,20 @@ export function EditorClient() {
     })
 
     try {
-      const blob = await exportProjectToWebM({
+      const result = await exportProjectToVideo({
         project,
         runtimeAssets,
         signal: controller.signal,
         onProgress: ({ progress, message }) =>
           setExportState((current) => ({ ...current, progress, message })),
       })
-      const url = URL.createObjectURL(blob)
-      setExportState({ progress: 1, message: "WebM export ready", url })
+      const url = URL.createObjectURL(result.blob)
+      setExportState({
+        progress: 1,
+        message: `${result.extension.toUpperCase()} export ready`,
+        extension: result.extension,
+        url,
+      })
     } catch (reason) {
       setExportState({
         progress: 0,
@@ -977,6 +1060,13 @@ export function EditorClient() {
             exportState={exportState}
             onExport={runExport}
             onCancelExport={() => exportState.controller?.abort()}
+            onFormatChange={(format) =>
+              setProject({
+                ...project,
+                exportSettings: { ...project.exportSettings, format },
+                updatedAt: Date.now(),
+              })
+            }
           />
           <ThemeToggle size="icon-sm" />
         </div>
@@ -1009,6 +1099,13 @@ export function EditorClient() {
             status={status}
             onClipChange={updateClip}
             onMusicChange={updateMusic}
+            onProjectChange={(patch) =>
+              setProject({
+                ...project,
+                exportSettings: { ...project.exportSettings, ...patch },
+                updatedAt: Date.now(),
+              })
+            }
             onReconnect={reconnectAsset}
             onRestoreSavedAccess={restoreSavedAccess}
           />
@@ -1081,6 +1178,7 @@ function InspectorPanel({
   status,
   onClipChange,
   onMusicChange,
+  onProjectChange,
   onReconnect,
   onRestoreSavedAccess,
 }: {
@@ -1094,6 +1192,7 @@ function InspectorPanel({
   status: string
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
+  onProjectChange: (patch: Partial<Project["exportSettings"]>) => void
   onReconnect: (
     assetId: string,
     file: File,
@@ -1101,7 +1200,6 @@ function InspectorPanel({
   ) => void
   onRestoreSavedAccess: () => void
 }) {
-  const duration = getProjectDuration(project)
   const missingSavedHandles = missingAssets.filter((asset) => asset.fileHandle)
   const missingAssetIds = new Set(missingAssets.map((asset) => asset.id))
   const heading =
@@ -1132,6 +1230,37 @@ function InspectorPanel({
           step={0.01}
           onChange={(value) =>
             onClipChange(selectedClip.id, { volume: value, muted: false })
+          }
+        />
+        <RangeField
+          label="Clip zoom"
+          value={getClipScale(selectedClip)}
+          max={2}
+          step={0.01}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, { scale: value })
+          }
+        />
+        <RangeField
+          label="Position X"
+          value={getClipPositionX(selectedClip)}
+          min={-100}
+          max={100}
+          step={1}
+          formatValue={(nextValue) => `${Math.round(nextValue)}%`}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, { positionX: value })
+          }
+        />
+        <RangeField
+          label="Position Y"
+          value={getClipPositionY(selectedClip)}
+          min={-100}
+          max={100}
+          step={1}
+          formatValue={(nextValue) => `${Math.round(nextValue)}%`}
+          onChange={(value) =>
+            onClipChange(selectedClip.id, { positionY: value })
           }
         />
         <NumberField
@@ -1222,16 +1351,10 @@ function InspectorPanel({
         </p>
       </div>
     ) : (
-      <div className="grid gap-3 text-sm">
-        <Metric label="Duration" value={formatDuration(duration)} />
-        <Metric label="Clips" value={String(project.clips.length)} />
-        <Metric label="Audio" value={String(project.musicTracks.length)} />
-        <Metric label="Files" value={String(project.sourceAssets.length)} />
-        <Metric
-          label="Export"
-          value={`${project.exportSettings.width}x${project.exportSettings.height} WebM`}
-        />
-      </div>
+      <ProjectSettingsFields
+        project={project}
+        onProjectChange={onProjectChange}
+      />
     )
 
   return (
@@ -1297,22 +1420,131 @@ function InspectorViewNav({
   )
 }
 
+function ProjectSettingsFields({
+  project,
+  onProjectChange,
+}: {
+  project: Project
+  onProjectChange: (patch: Partial<Project["exportSettings"]>) => void
+}) {
+  const aspectOption = getExportAspectOption(project.exportSettings)
+  const resolutionOptions = getResolutionOptions(project.exportSettings)
+  const resolutionValue = getResolutionValue(
+    project.exportSettings.width,
+    project.exportSettings.height
+  )
+
+  return (
+    <div className="space-y-4">
+      <FluidSelectField
+        label="Aspect ratio"
+        value={aspectOption.value}
+        options={ASPECT_RATIO_OPTIONS.map((option) => ({
+          label: option.label,
+          value: option.value,
+        }))}
+        onValueChange={(value) => {
+          const nextAspect =
+            ASPECT_RATIO_OPTIONS.find((option) => option.value === value) ??
+            ASPECT_RATIO_OPTIONS[0]
+          const nextResolution = nextAspect.resolutions[0]
+
+          onProjectChange({
+            width: nextResolution.width,
+            height: nextResolution.height,
+          })
+        }}
+      />
+      <FluidSelectField
+        label="Resolution"
+        value={resolutionValue}
+        options={resolutionOptions}
+        onValueChange={(value) => {
+          const [width, height] = value.split("x").map(Number)
+
+          if (Number.isFinite(width) && Number.isFinite(height)) {
+            onProjectChange({ width, height })
+          }
+        }}
+      />
+    </div>
+  )
+}
+
+function FluidSelectField({
+  label,
+  value,
+  options,
+  onValueChange,
+}: {
+  label: string
+  value: string
+  options: Array<{ label: string; value: string }>
+  onValueChange: (value: string) => void
+}) {
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value)
+  )
+  const selectedLabel = options[selectedIndex]?.label ?? options[0]?.label ?? label
+
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs font-normal text-muted-foreground">
+        {label}
+      </Label>
+      <DropdownMenu>
+        <DropdownTrigger className="flex h-8 w-full items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
+          <span className="truncate">{selectedLabel}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </DropdownTrigger>
+        <DropdownContent checkedIndex={selectedIndex} className="z-[5010]">
+          {options.map((option, index) => (
+            <MenuItem
+              key={option.value}
+              index={index}
+              label={option.label}
+              checked={option.value === value}
+              onSelect={() => onValueChange(option.value)}
+            />
+          ))}
+        </DropdownContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
 function ExportDialog({
   project,
   exportState,
   onExport,
   onCancelExport,
+  onFormatChange,
 }: {
   project: Project
   exportState: {
     progress: number
     message: string
     url?: string
+    extension?: ExportFormat
     controller?: AbortController
   }
   onExport: () => void
   onCancelExport: () => void
+  onFormatChange: (format: ExportFormat) => void
 }) {
+  const formatLabel = getExportFormatLabel(project.exportSettings.format)
+  const downloadExtension = exportState.extension ?? project.exportSettings.format
+  const formatOptions: Array<{ label: string; value: ExportFormat }> = [
+    { label: "WebM", value: "webm" },
+    { label: "MP4", value: "mp4" },
+  ]
+  const selectedFormatIndex = Math.max(
+    0,
+    formatOptions.findIndex(
+      (option) => option.value === project.exportSettings.format
+    )
+  )
   return (
     <Dialog>
       <DialogTrigger
@@ -1327,9 +1559,35 @@ function ExportDialog({
         <div className="space-y-1">
           <DialogTitle>Export</DialogTitle>
           <DialogDescription>
-            Render this project locally as a WebM file using the saved export
-            settings.
+            Render this project locally using browser-native export. Files never
+            leave this device.
           </DialogDescription>
+        </div>
+
+        <div className="space-y-1 text-sm">
+          <Label className="text-xs font-normal text-muted-foreground">
+            Format
+          </Label>
+          <DropdownMenu>
+            <DropdownTrigger className="flex h-8 w-full items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
+              {formatLabel}
+              <ChevronDown className="size-3.5 text-muted-foreground" />
+            </DropdownTrigger>
+            <DropdownContent
+              checkedIndex={selectedFormatIndex}
+              className="z-[5010]"
+            >
+              {formatOptions.map((option, index) => (
+                <MenuItem
+                  key={option.value}
+                  index={index}
+                  label={option.label}
+                  checked={project.exportSettings.format === option.value}
+                  onSelect={() => onFormatChange(option.value)}
+                />
+              ))}
+            </DropdownContent>
+          </DropdownMenu>
         </div>
 
         <div className="grid gap-3 rounded-lg bg-muted/55 p-3 text-sm">
@@ -1337,7 +1595,6 @@ function ExportDialog({
             label="Size"
             value={`${project.exportSettings.width}x${project.exportSettings.height}`}
           />
-          <Metric label="Format" value={project.exportSettings.format} />
           <Metric
             label="Frame rate"
             value={`${project.exportSettings.fps} fps`}
@@ -1363,7 +1620,7 @@ function ExportDialog({
               render={
                 <a
                   href={exportState.url}
-                  download={`${project.name || "export"}.webm`}
+                  download={`${project.name || "export"}.${downloadExtension}`}
                 />
               }
             >
@@ -1373,7 +1630,7 @@ function ExportDialog({
           ) : (
             <Button type="button" onClick={onExport}>
               <Download data-icon="inline-start" />
-              Export WebM
+              Export {formatLabel}
             </Button>
           )}
         </div>
@@ -1412,8 +1669,8 @@ function ReconnectButton({
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border bg-background p-2">
-      <div className="min-w-0 flex-1">
+    <div className="flex items-center gap-2 rounded-lg bg-background px-3 py-2">
+      <div className="min-w-0 flex-1 space-y-0.5">
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
           {formatBytes(asset.sizeBytes)} ·{" "}
@@ -1449,9 +1706,9 @@ function ReconnectButton({
             inputRef.current?.click()
           }
         }}
-        aria-label={`Reconnect ${asset.name}`}
+        aria-label={`Link local file for ${asset.name}`}
       >
-        <FolderOpen />
+        <LinkIcon />
       </Button>
     </div>
   )
@@ -1525,6 +1782,7 @@ function PreviewStage({
   )
   const activeClipIds = new Set(activeClips.map((clip) => clip.id))
   const projectDuration = getProjectDuration(project)
+  const previewAspectRatio = getExportAspectRatio(project.exportSettings)
 
   useEffect(
     () => () => {
@@ -1670,67 +1928,77 @@ function PreviewStage({
     >
       <div className="grid min-h-0 place-items-center bg-card p-3">
         <div className="[container-type:size] relative h-full min-h-0 w-full overflow-hidden bg-card">
-          {previewClips.map((clip) => {
-            const runtimeAsset = runtimeAssets[clip.sourceAssetId]
-            const asset = project.sourceAssets.find(
-              (item) => item.id === clip.sourceAssetId
-            )
+          <div
+            className="relative m-auto overflow-hidden rounded-lg bg-background"
+            style={{
+              aspectRatio: String(previewAspectRatio),
+              height: `min(100%, calc(100cqw / ${previewAspectRatio}))`,
+              width: `min(100%, calc(100cqh * ${previewAspectRatio}))`,
+            }}
+          >
+            {previewClips.map((clip) => {
+              const runtimeAsset = runtimeAssets[clip.sourceAssetId]
+              const asset = project.sourceAssets.find(
+                (item) => item.id === clip.sourceAssetId
+              )
 
-            if (!runtimeAsset) {
-              return null
-            }
+              if (!runtimeAsset) {
+                return null
+              }
 
-            return (
-              <PreviewVideoLayer
-                key={clip.id}
-                clip={clip}
-                asset={asset}
-                runtimeAsset={runtimeAsset}
-                playheadSeconds={playheadSeconds}
-                isPlaying={isPlaying}
-                isActive={activeClipIds.has(clip.id)}
-                audioContext={previewAudioContext}
-                getAudioContext={getPreviewAudioContext}
-                onIssue={(issue) => setPreviewIssue(clip.id, issue)}
-              />
-            )
-          })}
-          {hasActiveVideo ? null : (
-            <div className="absolute inset-0 grid place-items-center bg-card text-center text-sm text-muted-foreground">
-              <div className="space-y-2">
-                <Film className="mx-auto size-10" />
-                <p>
-                  {hasPlayableMedia
-                    ? "No video at the playhead."
-                    : "Import or reconnect local media to preview."}
-                </p>
+              return (
+                <PreviewVideoLayer
+                  key={clip.id}
+                  clip={clip}
+                  asset={asset}
+                  frameWidth={project.exportSettings.width}
+                  runtimeAsset={runtimeAsset}
+                  playheadSeconds={playheadSeconds}
+                  isPlaying={isPlaying}
+                  isActive={activeClipIds.has(clip.id)}
+                  audioContext={previewAudioContext}
+                  getAudioContext={getPreviewAudioContext}
+                  onIssue={(issue) => setPreviewIssue(clip.id, issue)}
+                />
+              )
+            })}
+            {hasActiveVideo ? null : (
+              <div className="absolute inset-0 grid place-items-center bg-background text-center text-sm text-muted-foreground">
+                <div className="space-y-2">
+                  <Film className="mx-auto size-10" />
+                  <p>
+                    {hasPlayableMedia
+                      ? "No video at the playhead."
+                      : "Import or reconnect local media to preview."}
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
-          {previewIssue ? (
-            <div className="absolute inset-x-3 bottom-3 z-[2000] rounded-lg border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
-              {previewIssue}
-            </div>
-          ) : null}
-          {activeMusicTracks.map((track) => {
-            const runtimeAsset = runtimeAssets[track.sourceAssetId]
+            )}
+            {previewIssue ? (
+              <div className="absolute inset-x-3 bottom-3 z-[2000] rounded-lg border border-white/15 bg-black/80 p-3 text-xs leading-5 text-white">
+                {previewIssue}
+              </div>
+            ) : null}
+            {activeMusicTracks.map((track) => {
+              const runtimeAsset = runtimeAssets[track.sourceAssetId]
 
-            if (!runtimeAsset) {
-              return null
-            }
+              if (!runtimeAsset) {
+                return null
+              }
 
-            return (
-              <PreviewAudioLayer
-                key={track.id}
-                track={track}
-                runtimeAsset={runtimeAsset}
-                playheadSeconds={playheadSeconds}
-                isPlaying={isPlaying}
-                audioContext={previewAudioContext}
-                getAudioContext={getPreviewAudioContext}
-              />
-            )
-          })}
+              return (
+                <PreviewAudioLayer
+                  key={track.id}
+                  track={track}
+                  runtimeAsset={runtimeAsset}
+                  playheadSeconds={playheadSeconds}
+                  isPlaying={isPlaying}
+                  audioContext={previewAudioContext}
+                  getAudioContext={getPreviewAudioContext}
+                />
+              )
+            })}
+          </div>
         </div>
       </div>
       <div className="flex items-center px-4 py-3">
@@ -1756,6 +2024,7 @@ function PreviewStage({
 function PreviewVideoLayer({
   clip,
   asset,
+  frameWidth,
   runtimeAsset,
   playheadSeconds,
   isPlaying,
@@ -1766,6 +2035,7 @@ function PreviewVideoLayer({
 }: {
   clip: TimelineClip
   asset?: SourceAsset
+  frameWidth: number
   runtimeAsset: RuntimeAsset
   playheadSeconds: number
   isPlaying: boolean
@@ -1788,6 +2058,13 @@ function PreviewVideoLayer({
   const [isFrameReady, setIsFrameReady] = useState(false)
   const aspectRatio =
     asset?.width && asset.height ? asset.width / asset.height : 16 / 9
+  const sourceWidth = asset?.width && asset.height ? asset.width : frameWidth
+  const sourceHeight =
+    asset?.width && asset.height ? asset.height : frameWidth / aspectRatio
+  const widthPercent = (sourceWidth / frameWidth) * 100
+  const scale = getClipScale(clip)
+  const positionX = getClipPositionX(clip)
+  const positionY = getClipPositionY(clip)
 
   useEffect(
     () => () => {
@@ -2019,13 +2296,16 @@ function PreviewVideoLayer({
       <video
         ref={videoRef}
         className={[
-          "absolute inset-0 m-auto block rounded-lg bg-card object-fill transition-opacity duration-75",
+          "absolute block bg-card object-contain transition-opacity duration-75",
           isActive && isFrameReady ? "opacity-100" : "opacity-0",
         ].join(" ")}
         style={{
-          aspectRatio: String(aspectRatio),
-          height: `min(100%, calc(100cqw / ${aspectRatio}))`,
-          width: `min(100%, calc(100cqh * ${aspectRatio}))`,
+          aspectRatio: `${sourceWidth} / ${sourceHeight}`,
+          height: "auto",
+          left: `${50 + positionX}%`,
+          top: `${50 + positionY}%`,
+          transform: `translate3d(-50%, -50%, 0) scale(${scale})`,
+          width: `${widthPercent}%`,
           zIndex: getPreviewLayerZIndex(clip),
         }}
         muted
@@ -2929,26 +3209,31 @@ function TrackLane({ top }: { top: number }) {
 function RangeField({
   label,
   value,
+  min = 0,
   max,
   step,
+  formatValue = (nextValue) => `${Math.round(nextValue * 100)}%`,
   onChange,
 }: {
   label: string
   value: number
+  min?: number
   max: number
   step: number
+  formatValue?: (value: number) => string
   onChange: (value: number) => void
 }) {
   return (
     <div className="space-y-1">
       <SliderComfortable
         value={value}
-        min={0}
+        min={min}
         max={max}
         step={step}
         variant="scrubber"
+        bordered={false}
         label={label}
-        formatValue={(nextValue) => `${Math.round(nextValue * 100)}%`}
+        formatValue={formatValue}
         onChange={(nextValue) => {
           if (Object.is(nextValue, value)) {
             return
@@ -3003,6 +3288,61 @@ function Metric({ label, value }: { label: string; value: string }) {
       <span className="font-medium">{value}</span>
     </div>
   )
+}
+
+function getExportFormatLabel(format: ExportFormat) {
+  return format.toUpperCase()
+}
+
+function getExportAspectRatio(settings: Project["exportSettings"]) {
+  return settings.width / settings.height || 16 / 9
+}
+
+function getExportAspectOption(settings: Project["exportSettings"]) {
+  const ratio = getExportAspectRatio(settings)
+
+  return (
+    ASPECT_RATIO_OPTIONS.find(
+      (option) => Math.abs(option.width / option.height - ratio) < 0.01
+    ) ?? ASPECT_RATIO_OPTIONS[0]
+  )
+}
+
+function getResolutionValue(width: number, height: number) {
+  return `${width}x${height}`
+}
+
+function getResolutionOptions(settings: Project["exportSettings"]) {
+  const aspectOption = getExportAspectOption(settings)
+  const options = aspectOption.resolutions.map((resolution) => ({
+    label: resolution.label,
+    value: getResolutionValue(resolution.width, resolution.height),
+  }))
+  const currentValue = getResolutionValue(settings.width, settings.height)
+
+  if (!options.some((option) => option.value === currentValue)) {
+    return [
+      {
+        label: `${settings.width} x ${settings.height}`,
+        value: currentValue,
+      },
+      ...options,
+    ]
+  }
+
+  return options
+}
+
+function getClipScale(clip: { scale?: number }) {
+  return clamp(clip.scale ?? 1, 0, 2)
+}
+
+function getClipPositionX(clip: { positionX?: number }) {
+  return clamp(clip.positionX ?? 0, -100, 100)
+}
+
+function getClipPositionY(clip: { positionY?: number }) {
+  return clamp(clip.positionY ?? 0, -100, 100)
 }
 
 function ResizeGapHandle({

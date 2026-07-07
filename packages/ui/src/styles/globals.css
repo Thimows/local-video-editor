@@ -86,17 +86,24 @@
   --shadow-1: var(--shadow-1);
   --color-shadow-color: var(--shadow-color);
   @keyframes spinner-move {
-    to {
-      stroke-dashoffset: -100;
+  to {
+    stroke-dashoffset: -100;
     }
   }
   @keyframes spinner-dash {
-    0%,
-    100% {
-      stroke-dasharray: 15 85;
+  0%, 100% {
+    stroke-dasharray: 15 85;
     }
-    50% {
-      stroke-dasharray: 40 60;
+  50% {
+    stroke-dasharray: 40 60;
+    }
+  }
+  @keyframes shimmer {
+  0% {
+    background-position: 0% 0;
+    }
+  100% {
+    background-position: 100% 0;
     }
   }
 }
@@ -107,7 +114,9 @@
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
+  --popover-active: var(--active);
   --popover-foreground: oklch(0.145 0 0);
+  --popover-hover: var(--hover);
   --primary: oklch(0.68 0.19 218);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
@@ -118,10 +127,10 @@
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.88 0 0);
-  --input: oklch(0.965 0 0);
+  --input: oklch(0.925 0 0);
   --ring: oklch(0.68 0.19 218);
   --hover: oklch(0.94 0 0);
-  --active: var(--input);
+  --active: oklch(0.94 0 0);
   --selected: oklch(0.82 0 0);
   --focus-ring: oklch(0.7 0 0);
   --chart-1: oklch(0.87 0 0);
@@ -183,7 +192,9 @@
   --card: oklch(0.195 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
+  --popover-active: rgb(255 255 255 / 0.1);
   --popover-foreground: oklch(0.985 0 0);
+  --popover-hover: rgb(255 255 255 / 0.14);
   --primary: oklch(0.78 0.17 218);
   --primary-foreground: oklch(0.12 0.03 218);
   --secondary: oklch(0.269 0 0);
@@ -194,10 +205,10 @@
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 14%);
-  --input: oklch(0.245 0 0);
+  --input: oklch(0.295 0 0);
   --ring: oklch(0.78 0.17 218);
   --hover: oklch(0.31 0 0);
-  --active: var(--input);
+  --active: oklch(0.275 0 0);
   --selected: oklch(0.52 0 0);
   --focus-ring: oklch(0.48 0 0);
   --chart-1: oklch(0.87 0 0);
@@ -287,4 +298,13 @@
     corner-shape: squircle;
     corner-shape: superellipse(var(--squircle-factor));
   }
+}
+
+.shimmer-text {
+    color: transparent;
+    background: linear-gradient(90deg, #a3a3a3 0%, #a3a3a3 35%, #525252 50%, #a3a3a3 65%, #a3a3a3 100%);
+    background-size: 300% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    animation: shimmer 1.5s ease-in-out infinite;
 }
