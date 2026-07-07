@@ -7,7 +7,8 @@ import {
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
   IconFileDownloadFilled as Download,
-  IconFileScissorsFilled as Scissors,
+  IconScissors as Scissors,
+  IconTrash as Trash,
   IconFileUploadFilled as Upload,
   IconFolderOpenFilled as FolderOpen,
   IconInfoCircleFilled as Info,
@@ -253,14 +254,54 @@ export function EditorClient() {
     }
   }, [])
 
+  const deleteSelectedTimelineItem = useCallback(() => {
+    if (!project) {
+      return
+    }
+
+    if (selection.type === "clip") {
+      if (!project.clips.some((clip) => clip.id === selection.id)) {
+        return
+      }
+
+      setProject({
+        ...project,
+        clips: project.clips.filter((clip) => clip.id !== selection.id),
+        updatedAt: Date.now(),
+      })
+      selectEditorSelection({ type: "project" })
+      setStatus("Clip deleted locally")
+      return
+    }
+
+    if (selection.type === "music") {
+      if (!project.musicTracks.some((track) => track.id === selection.id)) {
+        return
+      }
+
+      setProject({
+        ...project,
+        musicTracks: project.musicTracks.filter(
+          (track) => track.id !== selection.id
+        ),
+        updatedAt: Date.now(),
+      })
+      selectEditorSelection({ type: "project" })
+      setStatus("Timeline item deleted locally")
+    }
+  }, [project, selectEditorSelection, selection])
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      const isArrowKey = event.key === "ArrowLeft" || event.key === "ArrowRight"
+
       if (
-        event.repeat ||
+        (event.repeat && !isArrowKey) ||
         (event.code !== "Space" &&
           event.key !== " " &&
           event.key !== "Backspace" &&
-          event.key !== "Delete") ||
+          event.key !== "Delete" &&
+          !isArrowKey) ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
@@ -275,39 +316,26 @@ export function EditorClient() {
         return
       }
 
+      if (isArrowKey) {
+        event.preventDefault()
+        const direction = event.key === "ArrowRight" ? 1 : -1
+        const stepSeconds = event.shiftKey ? 10 : 1
+        const maxSeconds = project ? getProjectDuration(project) : Infinity
+
+        setPlayheadSeconds((current) =>
+          clamp(current + direction * stepSeconds, 0, maxSeconds)
+        )
+        return
+      }
+
       event.preventDefault()
-      setProject((current) => {
-        if (!current) {
-          return current
-        }
-
-        if (selection.type === "clip") {
-          return {
-            ...current,
-            clips: current.clips.filter((clip) => clip.id !== selection.id),
-            updatedAt: Date.now(),
-          }
-        }
-
-        if (selection.type === "music") {
-          return {
-            ...current,
-            musicTracks: current.musicTracks.filter(
-              (track) => track.id !== selection.id
-            ),
-            updatedAt: Date.now(),
-          }
-        }
-
-        return current
-      })
-      selectEditorSelection({ type: "project" })
+      deleteSelectedTimelineItem()
     }
 
     window.addEventListener("keydown", onKeyDown)
 
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [selectEditorSelection, selection])
+  }, [deleteSelectedTimelineItem, project])
 
   useEffect(() => {
     saveEditorLayout({
@@ -1167,6 +1195,8 @@ export function EditorClient() {
           onZoomChange={setTimelineZoom}
           onSplit={splitSelectedClip}
           canSplit={Boolean(selectedClip)}
+          onDelete={deleteSelectedTimelineItem}
+          canDelete={selection.type === "clip" || selection.type === "music"}
           onDropFiles={importTimelineDrop}
         />
       </section>
@@ -2570,6 +2600,8 @@ function Timeline({
   onZoomChange,
   onSplit,
   canSplit,
+  onDelete,
+  canDelete,
   onDropFiles,
 }: {
   project: Project
@@ -2585,6 +2617,8 @@ function Timeline({
   onZoomChange: (zoom: number) => void
   onSplit: () => void
   canSplit: boolean
+  onDelete: () => void
+  canDelete: boolean
   onDropFiles: (
     dropped: TimelineDroppedFile[],
     placement: TimelineDropPlacement
@@ -2812,6 +2846,26 @@ function Timeline({
                 disabled={!canSplit}
               >
                 <Scissors />
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip
+            content={
+              canDelete
+                ? "Delete selected timeline item"
+                : "Select a timeline item to delete"
+            }
+          >
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="Delete selected timeline item"
+                onClick={onDelete}
+                disabled={!canDelete}
+              >
+                <Trash />
               </Button>
             </span>
           </Tooltip>
