@@ -87,11 +87,7 @@ import {
   TabsSubtle,
   TabsSubtleItem,
 } from "@workspace/ui/components/ui/tabs-subtle"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@workspace/ui/components/tooltip"
+import { Tooltip } from "@workspace/ui/components/ui/tooltip"
 
 const TRACK_HEADER_WIDTH = 40
 const RULER_HEIGHT = 28
@@ -188,6 +184,12 @@ const ASPECT_RATIO_OPTIONS = [
 ] as const
 
 type InspectorView = "project" | "selection" | "files"
+
+type SourceAssetGroup = {
+  key: string
+  primaryAsset: SourceAsset
+  assets: SourceAsset[]
+}
 
 export function EditorClient() {
   const params = useParams<{ id: string }>()
@@ -884,7 +886,7 @@ export function EditorClient() {
   }
 
   async function reconnectAsset(
-    assetId: string,
+    assetId: string | string[],
     file: File,
     fileHandle?: FileSystemFileHandle
   ) {
@@ -892,7 +894,10 @@ export function EditorClient() {
       return
     }
 
-    const asset = project.sourceAssets.find((item) => item.id === assetId)
+    const assetIds = Array.isArray(assetId) ? assetId : [assetId]
+    const assetIdSet = new Set(assetIds)
+    const assets = project.sourceAssets.filter((item) => assetIdSet.has(item.id))
+    const asset = assets[0]
 
     if (!asset) {
       return
@@ -903,13 +908,14 @@ export function EditorClient() {
       return
     }
 
-    setRuntimeAssets((current) =>
-      mergeRuntimeAssets(current, { [assetId]: createRuntimeAsset(file) })
+    const nextRuntimeAssets = Object.fromEntries(
+      assets.map((item) => [item.id, createRuntimeAsset(file)])
     )
+    setRuntimeAssets((current) => mergeRuntimeAssets(current, nextRuntimeAssets))
     const nextProject = {
       ...project,
       sourceAssets: project.sourceAssets.map((item) =>
-        item.id === assetId
+        assetIdSet.has(item.id)
           ? {
               ...item,
               fileHandle: fileHandle ?? item.fileHandle,
@@ -923,11 +929,12 @@ export function EditorClient() {
     setProject(nextProject)
     await saveProject(nextProject)
     const savedProject = await getProject(nextProject.id)
-    const savedAsset = savedProject?.sourceAssets.find(
-      (item) => item.id === assetId
+    const savedAsset = savedProject?.sourceAssets.find((item) =>
+      assetIdSet.has(item.id)
     )
+    const suffix = assets.length > 1 ? ` (${assets.length} references)` : ""
     setStatus(
-      `Reconnected ${asset.name}${
+      `Reconnected ${asset.name}${suffix}${
         fileHandle
           ? savedAsset?.fileHandle?.getFile
             ? " with persistent access saved"
@@ -1194,7 +1201,7 @@ function InspectorPanel({
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
   onProjectChange: (patch: Partial<Project["exportSettings"]>) => void
   onReconnect: (
-    assetId: string,
+    assetId: string | string[],
     file: File,
     fileHandle?: FileSystemFileHandle
   ) => void
@@ -1218,6 +1225,7 @@ function InspectorPanel({
         : "Edit decisions are stored locally. Media files are referenced from disk."
   const fileList =
     project.sourceAssets.length > 0 ? project.sourceAssets : missingAssets
+  const fileGroups = groupSourceAssets(fileList)
   const canRestoreSavedAccess = missingSavedHandles.length > 0
 
   const body =
@@ -1329,20 +1337,26 @@ function InspectorPanel({
           </Button>
         ) : null}
 
-        {fileList.length === 0 ? (
+        {fileGroups.length === 0 ? (
           <p className="rounded-lg bg-muted/60 p-2 text-xs text-muted-foreground">
             Import video or audio files to start building a timeline.
           </p>
         ) : (
           <div className="space-y-2">
-            {fileList.map((asset) => (
-              <ReconnectButton
-                key={asset.id}
-                asset={asset}
-                connected={!missingAssetIds.has(asset.id)}
-                onReconnect={onReconnect}
-              />
-            ))}
+            {fileGroups.map((group) => {
+              const connectedCount = group.assets.filter(
+                (asset) => !missingAssetIds.has(asset.id)
+              ).length
+
+              return (
+                <ReconnectButton
+                  key={group.key}
+                  group={group}
+                  connectedCount={connectedCount}
+                  onReconnect={onReconnect}
+                />
+              )
+            })}
           </div>
         )}
 
@@ -1640,19 +1654,34 @@ function ExportDialog({
 }
 
 function ReconnectButton({
-  asset,
+  group,
   onReconnect,
-  connected,
+  connectedCount,
 }: {
-  asset: SourceAsset
-  connected?: boolean
+  group: SourceAssetGroup
+  connectedCount: number
   onReconnect: (
-    assetId: string,
+    assetId: string | string[],
     file: File,
     fileHandle?: FileSystemFileHandle
   ) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const asset = group.primaryAsset
+  const assetIds = group.assets.map((item) => item.id)
+  const storageLabel = group.assets.some((item) => item.fileHandle)
+    ? "persistent handle saved"
+    : group.assets.some((item) => item.fileBlob)
+      ? "stored in browser"
+      : "temporary file only"
+  const connectionStatus =
+    connectedCount === group.assets.length
+      ? "connected"
+      : connectedCount > 0
+        ? `${group.assets.length - connectedCount} missing`
+        : "missing"
+  const referenceLabel =
+    group.assets.length > 1 ? `${group.assets.length} references · ` : ""
 
   async function reconnectWithPersistentPicker() {
     const accept = asset.type === "video" ? "video" : "audio"
@@ -1661,7 +1690,7 @@ function ReconnectButton({
       selected.find((item) => item.file.name === asset.name) ?? selected[0]
 
     if (match) {
-      onReconnect(asset.id, match.file, match.fileHandle)
+      onReconnect(assetIds, match.file, match.fileHandle)
       return
     }
 
@@ -1673,13 +1702,8 @@ function ReconnectButton({
       <div className="min-w-0 flex-1 space-y-0.5">
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
-          {formatBytes(asset.sizeBytes)} ·{" "}
-          {asset.fileHandle
-            ? "persistent handle saved"
-            : asset.fileBlob
-              ? "stored in browser"
-              : "temporary file only"}{" "}
-          · {connected ? "connected" : "missing"}
+          {formatBytes(asset.sizeBytes)} · {referenceLabel}
+          {storageLabel} · {connectionStatus}
         </p>
       </div>
       <input
@@ -1692,7 +1716,7 @@ function ReconnectButton({
           event.target.value = ""
 
           if (file) {
-            onReconnect(asset.id, file)
+            onReconnect(assetIds, file)
           }
         }}
       />
@@ -1712,6 +1736,44 @@ function ReconnectButton({
       </Button>
     </div>
   )
+}
+
+function groupSourceAssets(assets: SourceAsset[]): SourceAssetGroup[] {
+  const groups = new Map<string, SourceAssetGroup>()
+
+  for (const asset of assets) {
+    const key = getSourceAssetGroupKey(asset)
+    const group = groups.get(key)
+
+    if (group) {
+      group.assets.push(asset)
+      continue
+    }
+
+    groups.set(key, {
+      key,
+      primaryAsset: asset,
+      assets: [asset],
+    })
+  }
+
+  return Array.from(groups.values())
+}
+
+function getSourceAssetGroupKey(asset: SourceAsset) {
+  const durationMs =
+    asset.durationSeconds === undefined
+      ? ""
+      : Math.round(asset.durationSeconds * 1000)
+
+  return [
+    asset.type,
+    asset.name.trim().toLowerCase(),
+    asset.sizeBytes,
+    durationMs,
+    asset.width ?? "",
+    asset.height ?? "",
+  ].join("|")
 }
 
 function PreviewStage({
@@ -2735,30 +2797,26 @@ function Timeline({
 
   return (
     <section className={`min-h-0 max-w-full min-w-0 ${CARD_CLASS}`}>
-      <div className="flex h-10 min-w-0 items-center justify-between gap-3 px-3">
+      <div className="flex h-10 min-w-0 items-center justify-between gap-3 px-2">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-xs text-muted-foreground">
-            Drag clips to move, drag edges to trim, click the ruler to scrub.
-          </span>
+          <Tooltip
+            content={canSplit ? "Split selected clip" : "Select a clip to split"}
+          >
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="Split clip"
+                onClick={onSplit}
+                disabled={!canSplit}
+              >
+                <Scissors />
+              </Button>
+            </span>
+          </Tooltip>
         </div>
         <div className="flex w-64 shrink-0 items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label="Split clip"
-                  onClick={onSplit}
-                  disabled={!canSplit}
-                />
-              }
-            >
-              <Scissors />
-            </TooltipTrigger>
-            <TooltipContent>Split selected clip</TooltipContent>
-          </Tooltip>
           <Label className="text-xs">Zoom</Label>
           <Slider
             value={[getTimelineZoomSliderValue(zoom)]}

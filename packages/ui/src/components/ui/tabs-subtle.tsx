@@ -196,7 +196,7 @@ const TabsSubtle = forwardRef<HTMLDivElement, TabsSubtleProps>(
                       width: hoverRect.width,
                       top: hoverRect.top,
                       height: hoverRect.height,
-                      opacity: 0.4,
+                      opacity: 0.8,
                     }}
                     exit={
                       !isMouseInside.current && selectedRect
