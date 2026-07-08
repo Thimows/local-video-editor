@@ -57,12 +57,21 @@ export const metadata: Metadata = {
       "Edit and export videos in your browser without uploading files, accounts, cloud processing, or watermarks.",
     type: "website",
     url: "/",
+    images: [
+      {
+        url: "/landing/og-preview.png",
+        width: 1800,
+        height: 945,
+        alt: "Local Video Editor preview",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Local Video Editor | Free Offline Browser Video Editing",
     description:
       "Edit and export videos in your browser without uploading files, accounts, cloud processing, or watermarks.",
+    images: ["/landing/og-preview.png"],
   },
 }
 
