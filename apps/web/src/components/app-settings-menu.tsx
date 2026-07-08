@@ -4,6 +4,7 @@ import { useTheme } from "next-themes"
 import {
   IconDeviceDesktopFilled as Monitor,
   IconDots as Dots,
+  IconMessageCircleFilled as MessageCircle,
   IconMoonFilled as Moon,
   IconSunFilled as Sun,
 } from "@tabler/icons-react"
@@ -13,6 +14,7 @@ import {
   DropdownContent,
   DropdownLabel,
   DropdownMenu,
+  DropdownSeparator,
   DropdownTrigger,
 } from "@workspace/ui/components/ui/dropdown"
 import { MenuItem } from "@workspace/ui/components/ui/menu-item"
@@ -24,16 +26,22 @@ export function AppSettingsMenu({
   tooltip?: string
 }) {
   const { theme, setTheme } = useTheme()
+  const openFeedback = () => {
+    window.stepform?.open("-V45DFBYhp")
+  }
   const themeOptions = [
     { label: "System", value: "system", icon: Monitor },
     { label: "Light", value: "light", icon: Sun },
     { label: "Dark", value: "dark", icon: Moon },
   ]
   const selectedTheme = theme ?? "system"
-  const selectedIndex = Math.max(
+  const selectedThemeIndex = Math.max(
     0,
     themeOptions.findIndex((option) => option.value === selectedTheme)
   )
+  const feedbackIndex = 0
+  const firstThemeIndex = 1
+  const selectedIndex = firstThemeIndex + selectedThemeIndex
 
   return (
     <DropdownMenu>
@@ -58,11 +66,19 @@ export function AppSettingsMenu({
         checkedIndex={selectedIndex}
         className="z-[5010] w-48"
       >
+        <DropdownLabel>Feedback</DropdownLabel>
+        <MenuItem
+          index={feedbackIndex}
+          icon={MessageCircle}
+          label="Submit feedback"
+          onSelect={openFeedback}
+        />
+        <DropdownSeparator />
         <DropdownLabel>Theme</DropdownLabel>
         {themeOptions.map((option, index) => (
           <MenuItem
             key={option.value}
-            index={index}
+            index={firstThemeIndex + index}
             icon={option.icon}
             label={option.label}
             checked={selectedTheme === option.value}

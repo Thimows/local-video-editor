@@ -1,6 +1,7 @@
 import { Geist } from "next/font/google"
 import localFont from "next/font/local"
 import type { Metadata } from "next"
+import Script from "next/script"
 
 import "@workspace/ui/globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -96,6 +97,15 @@ export default function RootLayout({
             <ShapeProvider defaultShape="pill">
               <SurfaceProvider value={1}>
                 <TooltipProvider>
+                  <Script
+                    src="https://www.stepform.ai/embed/v1.js"
+                    strategy="afterInteractive"
+                  />
+                  <div
+                    data-stepform-popup="-V45DFBYhp"
+                    data-stepform-size="75"
+                    data-stepform-trigger="manual"
+                  />
                   <ServiceWorkerRegister />
                   {children}
                   <Toaster />
