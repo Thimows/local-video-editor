@@ -2,9 +2,9 @@ import {
   AudioBufferSource,
   CanvasSource,
   Output,
-  QUALITY_HIGH,
 } from "mediabunny"
 
+import { getExportBitrates } from "../export-settings"
 import { getProjectDuration } from "../project"
 import type { ExportFormat, Project, RuntimeAssetMap } from "../types"
 import {
@@ -82,6 +82,7 @@ export async function exportProjectToVideo({
   }
 
   const config = getExportFormatConfig(project.exportSettings.format)
+  const exportBitrates = getExportBitrates(project.exportSettings)
   const canvas = document.createElement("canvas")
   canvas.width = project.exportSettings.width
   canvas.height = project.exportSettings.height
@@ -98,13 +99,13 @@ export async function exportProjectToVideo({
   })
   const videoSource = new CanvasSource(canvas, {
     codec: config.videoCodec,
-    bitrate: project.exportSettings.videoBitsPerSecond || QUALITY_HIGH,
+    bitrate: exportBitrates.videoBitsPerSecond,
     keyFrameInterval: 2,
   })
   const audioSource = hasAudioTrack
     ? new AudioBufferSource({
         codec: config.audioCodec,
-        bitrate: project.exportSettings.audioBitsPerSecond || QUALITY_HIGH,
+        bitrate: exportBitrates.audioBitsPerSecond,
         transform: {
           numberOfChannels: EXPORT_AUDIO_CHANNELS,
           sampleFormat: "f32",

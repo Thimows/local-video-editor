@@ -1,12 +1,13 @@
 import type { ExportSettings, Project } from "./types"
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  compression: "balanced",
   format: "webm",
   width: 1920,
   height: 1080,
   fps: 30,
-  videoBitsPerSecond: 8_000_000,
-  audioBitsPerSecond: 192_000,
+  videoBitsPerSecond: 3_750_000,
+  audioBitsPerSecond: 160_000,
 }
 
 export function createEmptyProject(name = "Untitled project"): Project {

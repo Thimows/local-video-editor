@@ -1,6 +1,7 @@
 export type SourceAssetType = "video" | "audio"
 
 export type ExportFormat = "webm" | "mp4"
+export type ExportCompression = "high" | "balanced" | "small"
 
 export type SourceAsset = {
   id: string
@@ -41,6 +42,7 @@ export type MusicTrack = {
 }
 
 export type ExportSettings = {
+  compression: ExportCompression
   format: ExportFormat
   width: number
   height: number

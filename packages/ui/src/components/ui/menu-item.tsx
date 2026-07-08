@@ -81,6 +81,7 @@ interface MenuItemProps extends HTMLAttributes<HTMLDivElement> {
    *  reserved icon column. */
   icon?: IconComponent;
   label: string;
+  detail?: string;
   index: number;
   /** When a boolean, the item is a radio-style option (role="menuitemradio"
    *  with aria-checked). When undefined, it is a plain action item
@@ -98,6 +99,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
     {
       icon: Icon,
       label,
+      detail,
       index,
       checked,
       onSelect,
@@ -184,9 +186,9 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
         )}
         {/* Both stacked spans carry the text-box trim so the invisible bold
             sizer and the visible label keep identical boxes. */}
-        <span className="inline-grid flex-1 text-[13px]">
+        <span className="inline-grid min-w-0 flex-1 text-[13px]">
           <span
-            className="col-start-1 row-start-1 invisible [text-box:trim-both_cap_alphabetic]"
+            className="col-start-1 row-start-1 truncate invisible [text-box:trim-both_cap_alphabetic]"
             style={{ fontVariationSettings: fontWeights.semibold }}
             aria-hidden="true"
           >
@@ -194,7 +196,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
           </span>
           <span
             className={cn(
-              "col-start-1 row-start-1 transition-[color,font-variation-settings] duration-80 [text-box:trim-both_cap_alphabetic]",
+              "col-start-1 row-start-1 truncate transition-[color,font-variation-settings] duration-80 [text-box:trim-both_cap_alphabetic]",
               isActive || checked
                 ? "text-foreground"
                 : "text-muted-foreground"
@@ -208,6 +210,18 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
             {label}
           </span>
         </span>
+        {detail ? (
+          <span
+            className={cn(
+              "shrink-0 text-[12px] transition-colors duration-80",
+              isActive || checked
+                ? "text-foreground"
+                : "text-muted-foreground"
+            )}
+          >
+            {detail}
+          </span>
+        ) : null}
         <AnimatePresence>
           {checked && (
             <motion.svg

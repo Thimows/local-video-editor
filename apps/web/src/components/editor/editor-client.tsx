@@ -38,6 +38,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
+import {
+  EXPORT_COMPRESSION_OPTIONS,
+  getEstimatedExportSizeBytes,
+  getExportBitrates,
+  getExportCompression,
+} from "@/lib/editor/export-settings"
 import { exportProjectToVideo } from "@/lib/editor/export-video"
 import {
   clearPreviewAudioDebug,
@@ -93,6 +99,7 @@ import type {
   Selection,
   SourceAsset,
   TimelineClip,
+  ExportCompression,
   ExportFormat,
 } from "@/lib/editor/types"
 import { Button } from "@workspace/ui/components/button"
@@ -1458,6 +1465,13 @@ export function EditorClient() {
                 updatedAt: Date.now(),
               })
             }
+            onCompressionChange={(compression) =>
+              setProject({
+                ...project,
+                exportSettings: { ...project.exportSettings, compression },
+                updatedAt: Date.now(),
+              })
+            }
           />
         </div>
       </header>
@@ -2021,15 +2035,22 @@ function ExportDialog({
   onExport,
   onCancelExport,
   onFormatChange,
+  onCompressionChange,
 }: {
   project: Project
   exportState: ExportUiState
   onExport: () => void
   onCancelExport: () => void
   onFormatChange: (format: ExportFormat) => void
+  onCompressionChange: (compression: ExportCompression) => void
 }) {
+  const compression = getExportCompression(project.exportSettings)
   const formatLabel = getExportFormatLabel(project.exportSettings.format)
   const downloadExtension = exportState.extension ?? project.exportSettings.format
+  const estimatedSizeBytes = getEstimatedExportSizeBytes(
+    project.exportSettings,
+    getProjectDuration(project)
+  )
   const isExporting = Boolean(exportState.controller)
   const [open, setOpen] = useState(false)
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false)
@@ -2043,6 +2064,15 @@ function ExportDialog({
       (option) => option.value === project.exportSettings.format
     )
   )
+  const selectedCompressionIndex = Math.max(
+    0,
+    EXPORT_COMPRESSION_OPTIONS.findIndex(
+      (option) => option.value === compression
+    )
+  )
+  const compressionLabel =
+    EXPORT_COMPRESSION_OPTIONS[selectedCompressionIndex]?.label ??
+    "Balanced"
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
@@ -2125,6 +2155,44 @@ function ExportDialog({
 
           <div className="text-sm">
             <Label className="mb-1 block text-xs font-normal text-muted-foreground">
+              Quality
+            </Label>
+            <DropdownMenu disabled={isExporting}>
+              <DropdownTrigger
+                disabled={isExporting}
+                className="flex h-8 w-full items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              >
+                {compressionLabel}
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              </DropdownTrigger>
+              <DropdownContent
+                checkedIndex={selectedCompressionIndex}
+                className="z-[5010]"
+              >
+                {EXPORT_COMPRESSION_OPTIONS.map((option, index) => (
+                  <MenuItem
+                    key={option.value}
+                    index={index}
+                    detail={formatExportBitrateDetail({
+                      ...project.exportSettings,
+                      compression: option.value,
+                    })}
+                    label={option.label}
+                    checked={compression === option.value}
+                    disabled={isExporting}
+                    onSelect={() => {
+                      if (!isExporting) {
+                        onCompressionChange(option.value)
+                      }
+                    }}
+                  />
+                ))}
+              </DropdownContent>
+            </DropdownMenu>
+          </div>
+
+          <div className="text-sm">
+            <Label className="mb-1 block text-xs font-normal text-muted-foreground">
               Project properties
             </Label>
             <div className="grid gap-1">
@@ -2135,6 +2203,10 @@ function ExportDialog({
               <Metric
                 label="Frame rate"
                 value={`${project.exportSettings.fps} fps`}
+              />
+              <Metric
+                label="Estimated size"
+                value={`~${formatBytes(estimatedSizeBytes)}`}
               />
             </div>
           </div>
@@ -5701,6 +5773,24 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function getExportFormatLabel(format: ExportFormat) {
   return format.toUpperCase()
+}
+
+function formatExportBitrateDetail(settings: Project["exportSettings"]) {
+  const { audioBitsPerSecond, videoBitsPerSecond } = getExportBitrates(settings)
+
+  return `${formatBitrate(videoBitsPerSecond)} / ${formatBitrate(audioBitsPerSecond)}`
+}
+
+function formatBitrate(bitsPerSecond: number) {
+  if (bitsPerSecond >= 1_000_000) {
+    return `${formatRoundedNumber(bitsPerSecond / 1_000_000)} Mbps`
+  }
+
+  return `${Math.round(bitsPerSecond / 1_000)} kbps`
+}
+
+function formatRoundedNumber(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 function getExportAspectRatio(settings: Project["exportSettings"]) {
