@@ -129,7 +129,7 @@ import {
 import { Tooltip } from "@workspace/ui/components/ui/tooltip"
 
 const RULER_HEIGHT = 28
-const TIMELINE_VIEWPORT_HEIGHT = 178
+const TIMELINE_VIEWPORT_HEIGHT = 214
 const TIMELINE_PLAYHEAD_LINE_OFFSET_PX = 0.5
 const TIMELINE_PLAYHEAD_CAP_OFFSET_PX = 1
 const TRACK_HEIGHT = 34
@@ -155,6 +155,8 @@ const TIMELINE_DRAG_START_THRESHOLD_PX = 3
 const TIMELINE_CONTENT_INSET_X = 36
 const TIMELINE_DROP_FALLBACK_DURATION_SECONDS = 12
 const TIMELINE_DROP_FALLBACK_MIN_WIDTH = 120
+const TIMELINE_SOURCE_ASSET_DRAG_TYPE =
+  "application/x-local-video-editor-source-asset"
 const SUPPORTED_MEDIA_EXTENSIONS = "MP4, MOV, M4V, WebM, MP3, M4A, WAV, OGG"
 const PREVIEW_RESOLUTION_OPTIONS = [
   { label: "Full resolution", value: "full", scale: 1 },
@@ -308,6 +310,10 @@ type TimelineItemPreviewPatch =
 type TimelineItemCommitOptions = {
   insertTrackAtTop?: boolean
 }
+type TimelineFocusRequest = {
+  id: number
+  selection: Selection
+}
 
 type ExportUiState = {
   progress: number
@@ -402,6 +408,11 @@ export function EditorClient() {
   const [isTimelineScrubSettling, setIsTimelineScrubSettling] = useState(false)
   const [timelineItemPreview, setTimelineItemPreview] =
     useState<TimelineItemPreviewPatch | null>(null)
+  const [timelineFocusRequest, setTimelineFocusRequest] =
+    useState<TimelineFocusRequest | null>(null)
+  const [draggedSourceAssetId, setDraggedSourceAssetId] = useState<
+    string | null
+  >(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [exportState, setExportState] = useState<ExportUiState>({
     progress: 0,
@@ -441,6 +452,7 @@ export function EditorClient() {
   const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
   const timelineScrubSettleTimeoutRef = useRef<number | null>(null)
   const cleanedPreviewProxyAssetIdsRef = useRef<Set<string>>(new Set())
+  const timelineFocusRequestIdRef = useRef(0)
 
   const selectEditorSelection = useCallback((nextSelection: Selection) => {
     setSelection(nextSelection)
@@ -455,6 +467,18 @@ export function EditorClient() {
     }
   }, [])
 
+  const focusTimelineSelection = useCallback(
+    (nextSelection: Selection) => {
+      selectEditorSelection(nextSelection)
+      timelineFocusRequestIdRef.current += 1
+      setTimelineFocusRequest({
+        id: timelineFocusRequestIdRef.current,
+        selection: nextSelection,
+      })
+    },
+    [selectEditorSelection]
+  )
+
   const deleteSelectedTimelineItem = useCallback(() => {
     if (!project) {
       return
@@ -465,11 +489,13 @@ export function EditorClient() {
         return
       }
 
-      setProject({
-        ...project,
-        clips: project.clips.filter((clip) => clip.id !== selection.id),
-        updatedAt: Date.now(),
-      })
+      setProject(
+        compactProjectTimelineTracks({
+          ...project,
+          clips: project.clips.filter((clip) => clip.id !== selection.id),
+          updatedAt: Date.now(),
+        })
+      )
       selectEditorSelection({ type: "project" })
       return
     }
@@ -479,13 +505,15 @@ export function EditorClient() {
         return
       }
 
-      setProject({
-        ...project,
-        musicTracks: project.musicTracks.filter(
-          (track) => track.id !== selection.id
-        ),
-        updatedAt: Date.now(),
-      })
+      setProject(
+        compactProjectTimelineTracks({
+          ...project,
+          musicTracks: project.musicTracks.filter(
+            (track) => track.id !== selection.id
+          ),
+          updatedAt: Date.now(),
+        })
+      )
       selectEditorSelection({ type: "project" })
     }
   }, [project, selectEditorSelection, selection])
@@ -816,6 +844,55 @@ export function EditorClient() {
   const missingAssets = project
     ? project.sourceAssets.filter((asset) => !runtimeAssets[asset.id])
     : []
+  const draggedSourceAsset =
+    project && draggedSourceAssetId
+      ? (project.sourceAssets.find((asset) => asset.id === draggedSourceAssetId) ??
+        null)
+      : null
+
+  function getPlacedTimelineLocation({
+    fallbackStart,
+    placedTimelineOffset = 0,
+    placement,
+    sourceEndSeconds,
+    timelineItems,
+  }: {
+    fallbackStart: number
+    placedTimelineOffset?: number
+    placement?: TimelineDropPlacement
+    sourceEndSeconds: number
+    timelineItems: TimelineItemData[]
+  }) {
+    const desiredStart = placement
+      ? placement.timelineStartSeconds + placedTimelineOffset
+      : fallbackStart
+    const desiredTrackIndex = placement
+      ? findNearestAvailableTrackIndex(
+          timelineItems,
+          placement.insertTrackAtTop ? 0 : placement.trackIndex,
+          desiredStart,
+          sourceEndSeconds
+        )
+      : findAvailableTrackIndex(timelineItems, desiredStart, sourceEndSeconds)
+    const desiredTimelineStart = snapEnabled
+      ? snapTimelineStart(
+          desiredStart,
+          sourceEndSeconds,
+          timelineItems,
+          getSnapThresholdSeconds(timelineZoom)
+        )
+      : desiredStart
+    const timelineStartSeconds = findNearestNonOverlappingStart(
+      desiredTimelineStart,
+      sourceEndSeconds,
+      timelineItems.filter((item) => getTrackIndex(item) === desiredTrackIndex)
+    )
+
+    return {
+      timelineStartSeconds,
+      trackIndex: desiredTrackIndex,
+    }
+  }
 
   async function importFiles(
     files: File[],
@@ -857,6 +934,7 @@ export function EditorClient() {
     const importedClips: TimelineClip[] = []
     const importedTracks: MusicTrack[] = []
     const nextRuntimeAssets: Record<string, RuntimeAsset> = {}
+    let firstImportedSelection: Selection | null = null
     let nextTimelineStart =
       placement?.timelineStartSeconds ?? getProjectDuration(project)
     let placedTimelineOffset = 0
@@ -889,57 +967,44 @@ export function EditorClient() {
         ...importedClips,
         ...importedTracks,
       ]
-      const desiredStart = placement
-        ? placement.timelineStartSeconds + placedTimelineOffset
-        : nextTimelineStart
-      const desiredTrackIndex = placement
-        ? findNearestAvailableTrackIndex(
-            timelineItems,
-            placement.insertTrackAtTop ? 0 : placement.trackIndex,
-            desiredStart,
-            sourceEndSeconds
-          )
-        : findAvailableTrackIndex(timelineItems, desiredStart, sourceEndSeconds)
-      const desiredTimelineStart = snapEnabled
-        ? snapTimelineStart(
-            desiredStart,
-            sourceEndSeconds,
-            timelineItems,
-            getSnapThresholdSeconds(timelineZoom)
-          )
-        : desiredStart
-      const timelineStartSeconds = findNearestNonOverlappingStart(
-        desiredTimelineStart,
+      const { timelineStartSeconds, trackIndex } = getPlacedTimelineLocation({
+        fallbackStart: nextTimelineStart,
+        placedTimelineOffset,
+        placement,
         sourceEndSeconds,
-        timelineItems.filter(
-          (item) => getTrackIndex(item) === desiredTrackIndex
-        )
-      )
+        timelineItems,
+      })
 
       if (type === "video") {
+        const clipId = crypto.randomUUID()
+
         importedClips.push({
-          id: crypto.randomUUID(),
+          id: clipId,
           sourceAssetId: asset.id,
           sourceStartSeconds: 0,
           sourceEndSeconds,
           timelineStartSeconds,
-          trackIndex: desiredTrackIndex,
+          trackIndex,
           scale: 1,
           positionX: 0,
           positionY: 0,
           muted: false,
           volume: 1,
         })
+        firstImportedSelection ??= { type: "clip", id: clipId }
       } else {
+        const trackId = crypto.randomUUID()
+
         importedTracks.push({
-          id: crypto.randomUUID(),
+          id: trackId,
           sourceAssetId: asset.id,
           timelineStartSeconds,
           sourceStartSeconds: 0,
           sourceEndSeconds,
-          trackIndex: desiredTrackIndex,
+          trackIndex,
           volume: 0.75,
         })
+        firstImportedSelection ??= { type: "music", id: trackId }
       }
 
       nextTimelineStart = timelineStartSeconds + sourceEndSeconds
@@ -962,6 +1027,9 @@ export function EditorClient() {
       mergeRuntimeAssets(current, nextRuntimeAssets)
     )
     setProject(nextProject)
+    if (firstImportedSelection) {
+      focusTimelineSelection(firstImportedSelection)
+    }
     await saveProject(nextProject)
     const savedProject = await getProject(nextProject.id)
     publishLocalFileDebug("import-complete", savedProject ?? nextProject)
@@ -1010,6 +1078,96 @@ export function EditorClient() {
       ),
       placement
     )
+  }
+
+  async function addSourceAssetToTimeline(
+    assetId: string,
+    placement: TimelineDropPlacement
+  ) {
+    if (!project) {
+      return
+    }
+
+    const asset = project.sourceAssets.find((item) => item.id === assetId)
+
+    if (!asset || !runtimeAssetsRef.current[asset.id]) {
+      setInspectorView("files")
+      return
+    }
+
+    const sourceEndSeconds = asset.durationSeconds ?? 5
+    const baseClips = placement.insertTrackAtTop
+      ? project.clips.map((clip) => ({
+          ...clip,
+          trackIndex: getTrackIndex(clip) + 1,
+        }))
+      : project.clips
+    const baseMusicTracks = placement.insertTrackAtTop
+      ? project.musicTracks.map((track) => ({
+          ...track,
+          trackIndex: getTrackIndex(track) + 1,
+        }))
+      : project.musicTracks
+    const timelineItems = [...baseClips, ...baseMusicTracks]
+    const { timelineStartSeconds, trackIndex } = getPlacedTimelineLocation({
+      fallbackStart: getProjectDuration(project),
+      placement,
+      sourceEndSeconds,
+      timelineItems,
+    })
+
+    if (asset.type === "video") {
+      const clipId = crypto.randomUUID()
+      const nextProject = {
+        ...project,
+        clips: [
+          ...baseClips,
+          {
+            id: clipId,
+            sourceAssetId: asset.id,
+            sourceStartSeconds: 0,
+            sourceEndSeconds,
+            timelineStartSeconds,
+            trackIndex,
+            scale: 1,
+            positionX: 0,
+            positionY: 0,
+            muted: false,
+            volume: 1,
+          } satisfies TimelineClip,
+        ],
+        musicTracks: baseMusicTracks,
+        updatedAt: Date.now(),
+      }
+
+      setProject(nextProject)
+      focusTimelineSelection({ type: "clip", id: clipId })
+      await saveProject(nextProject)
+      return
+    }
+
+    const trackId = crypto.randomUUID()
+    const nextProject = {
+      ...project,
+      clips: baseClips,
+      musicTracks: [
+        ...baseMusicTracks,
+        {
+          id: trackId,
+          sourceAssetId: asset.id,
+          timelineStartSeconds,
+          sourceStartSeconds: 0,
+          sourceEndSeconds,
+          trackIndex,
+          volume: 0.75,
+        } satisfies MusicTrack,
+      ],
+      updatedAt: Date.now(),
+    }
+
+    setProject(nextProject)
+    focusTimelineSelection({ type: "music", id: trackId })
+    await saveProject(nextProject)
   }
 
   function allowDrop(event: DragEvent<HTMLElement>) {
@@ -1157,7 +1315,9 @@ export function EditorClient() {
       ? { ...patch, trackIndex: 0 }
       : patch
 
-    setProject({
+    const shouldCompactTracks =
+      options.insertTrackAtTop || commitPatch.trackIndex !== undefined
+    const nextProject = {
       ...project,
       clips: clips.map((clip) =>
         clip.id === id
@@ -1173,7 +1333,13 @@ export function EditorClient() {
       ),
       musicTracks,
       updatedAt: Date.now(),
-    })
+    }
+
+    setProject(
+      shouldCompactTracks
+        ? compactProjectTimelineTracks(nextProject)
+        : nextProject
+    )
   }
 
   function updateMusic(
@@ -1203,7 +1369,9 @@ export function EditorClient() {
       ? { ...patch, trackIndex: 0 }
       : patch
 
-    setProject({
+    const shouldCompactTracks =
+      options.insertTrackAtTop || commitPatch.trackIndex !== undefined
+    const nextProject = {
       ...project,
       clips,
       musicTracks: musicTracks.map((track) =>
@@ -1219,7 +1387,13 @@ export function EditorClient() {
           : track
       ),
       updatedAt: Date.now(),
-    })
+    }
+
+    setProject(
+      shouldCompactTracks
+        ? compactProjectTimelineTracks(nextProject)
+        : nextProject
+    )
   }
 
   function splitSelectedClip() {
@@ -1510,6 +1684,8 @@ export function EditorClient() {
               })
             }
             onReconnect={reconnectAsset}
+            onSourceAssetDragStart={setDraggedSourceAssetId}
+            onSourceAssetDragEnd={() => setDraggedSourceAssetId(null)}
           />
           <div className="grid min-h-0 place-items-center">
             <ResizeGapHandle
@@ -1570,7 +1746,9 @@ export function EditorClient() {
           onDelete={deleteSelectedTimelineItem}
           canDelete={selection.type === "clip" || selection.type === "music"}
           snapEnabled={snapEnabled}
+          draggedSourceAsset={draggedSourceAsset}
           onSnapEnabledChange={setSnapEnabled}
+          focusRequest={timelineFocusRequest}
           onClipPreviewChange={(id, preview) =>
             setTimelineItemPreview(
               preview
@@ -1596,6 +1774,7 @@ export function EditorClient() {
             )
           }
           onDropFiles={importTimelineDrop}
+          onDropSourceAsset={addSourceAssetToTimeline}
         />
       </section>
       <ReconnectWarningDialog
@@ -1628,6 +1807,8 @@ function InspectorPanel({
   onMusicChange,
   onProjectChange,
   onReconnect,
+  onSourceAssetDragEnd,
+  onSourceAssetDragStart,
 }: {
   view: InspectorView
   onViewChange: (view: InspectorView) => void
@@ -1644,6 +1825,8 @@ function InspectorPanel({
     file: File,
     fileHandle?: FileSystemFileHandle
   ) => void
+  onSourceAssetDragStart: (assetId: string) => void
+  onSourceAssetDragEnd: () => void
 }) {
   const timelineAssetIds = new Set(
     [...project.clips, ...project.musicTracks].map((item) => item.sourceAssetId)
@@ -1789,13 +1972,19 @@ function InspectorPanel({
               const connectedCount = group.assets.filter(
                 (asset) => !missingAssetIds.has(asset.id)
               ).length
+              const draggableAsset =
+                group.assets.find((asset) => !missingAssetIds.has(asset.id)) ??
+                null
 
               return (
                 <ReconnectButton
                   key={group.key}
                   group={group}
                   connectedCount={connectedCount}
+                  draggableAsset={draggableAsset}
                   onReconnect={onReconnect}
+                  onSourceAssetDragEnd={onSourceAssetDragEnd}
+                  onSourceAssetDragStart={onSourceAssetDragStart}
                 />
               )
             })}
@@ -2366,14 +2555,20 @@ function ReconnectButton({
   group,
   onReconnect,
   connectedCount,
+  draggableAsset,
+  onSourceAssetDragEnd,
+  onSourceAssetDragStart,
 }: {
   group: SourceAssetGroup
   connectedCount: number
+  draggableAsset: SourceAsset | null
   onReconnect: (
     assetId: string | string[],
     file: File,
     fileHandle?: FileSystemFileHandle
   ) => void
+  onSourceAssetDragStart: (assetId: string) => void
+  onSourceAssetDragEnd: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const asset = group.primaryAsset
@@ -2403,7 +2598,31 @@ function ReconnectButton({
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-background px-3 py-2">
+    <div
+      className={[
+        "flex items-center gap-2 rounded-lg bg-background px-3 py-2",
+        draggableAsset ? "cursor-grab active:cursor-grabbing" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      draggable={Boolean(draggableAsset)}
+      onDragStart={(event) => {
+        if (!draggableAsset) {
+          event.preventDefault()
+          return
+        }
+
+        event.dataTransfer.effectAllowed = "copy"
+        event.dataTransfer.setData(
+          TIMELINE_SOURCE_ASSET_DRAG_TYPE,
+          draggableAsset.id
+        )
+        event.dataTransfer.setData("text/plain", draggableAsset.name)
+        setRoundedDragImage(event)
+        onSourceAssetDragStart(draggableAsset.id)
+      }}
+      onDragEnd={onSourceAssetDragEnd}
+    >
       <div className="min-w-0 flex-1 space-y-0.5">
         <p className="truncate text-xs font-medium">{asset.name}</p>
         <p className="text-xs text-muted-foreground">
@@ -2440,7 +2659,7 @@ function ReconnectButton({
           hasMissingReferences ? "Reconnect local file" : "File is connected"
         }
       >
-        <span className="inline-flex">
+        <span className="inline-flex cursor-default">
           <Button
             size="icon-sm"
             variant="outline"
@@ -2498,6 +2717,33 @@ function getSourceAssetGroupKey(asset: SourceAsset) {
     asset.width ?? "",
     asset.height ?? "",
   ].join("|")
+}
+
+function setRoundedDragImage(event: DragEvent<HTMLElement>) {
+  const source = event.currentTarget
+  const rect = source.getBoundingClientRect()
+  const computedStyle = window.getComputedStyle(source)
+  const clone = source.cloneNode(true) as HTMLElement
+
+  clone.style.position = "fixed"
+  clone.style.top = "-10000px"
+  clone.style.left = "-10000px"
+  clone.style.width = `${rect.width}px`
+  clone.style.height = `${rect.height}px`
+  clone.style.overflow = "hidden"
+  clone.style.borderRadius = computedStyle.borderRadius
+  clone.style.background = computedStyle.background
+  clone.style.boxSizing = "border-box"
+  clone.style.pointerEvents = "none"
+  clone.style.transform = "translateZ(0)"
+
+  document.body.appendChild(clone)
+  event.dataTransfer.setDragImage(
+    clone,
+    event.clientX - rect.left,
+    event.clientY - rect.top
+  )
+  window.setTimeout(() => clone.remove(), 0)
 }
 
 function PreviewStage({
@@ -3397,7 +3643,7 @@ function PreviewResolutionSelect({
 
   return (
     <DropdownMenu>
-      <DropdownTrigger className="flex h-8 w-40 items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
+      <DropdownTrigger className="flex h-8 w-36 items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
         <span className="truncate">{selectedOption.label}</span>
         {isLoading ? (
           <Tooltip content={loadingLabel} side="top">
@@ -4272,10 +4518,13 @@ function Timeline({
   onDelete,
   canDelete,
   snapEnabled,
+  draggedSourceAsset,
   onSnapEnabledChange,
+  focusRequest,
   onClipPreviewChange,
   onMusicPreviewChange,
   onDropFiles,
+  onDropSourceAsset,
 }: {
   project: Project
   runtimeAssets: RuntimeAssetMap
@@ -4302,7 +4551,9 @@ function Timeline({
   onDelete: () => void
   canDelete: boolean
   snapEnabled: boolean
+  draggedSourceAsset: SourceAsset | null
   onSnapEnabledChange: (enabled: boolean) => void
+  focusRequest: TimelineFocusRequest | null
   onClipPreviewChange: (
     id: string,
     preview: TimelineItemDragPreview | null
@@ -4313,6 +4564,10 @@ function Timeline({
   ) => void
   onDropFiles: (
     dropped: TimelineDroppedFile[],
+    placement: TimelineDropPlacement
+  ) => void
+  onDropSourceAsset: (
+    assetId: string,
     placement: TimelineDropPlacement
   ) => void
 }) {
@@ -4594,6 +4849,45 @@ function Timeline({
   }, [])
 
   useEffect(() => {
+    if (!focusRequest || focusRequest.selection.type === "project") {
+      return
+    }
+
+    const requestedSelection = focusRequest.selection
+    const scrollContainer = timelineRef.current
+    const verticalContainer = timelineViewportRef.current
+    const item =
+      requestedSelection.type === "clip"
+        ? project.clips.find((clip) => clip.id === requestedSelection.id)
+        : project.musicTracks.find(
+            (track) => track.id === requestedSelection.id
+          )
+
+    if (!scrollContainer || !item) {
+      return
+    }
+
+    const itemLeft = TIMELINE_CONTENT_INSET_X + item.timelineStartSeconds * zoom
+    const itemWidth = getClipDuration(item) * zoom
+    const maxScrollLeft = Math.max(
+      0,
+      width + TIMELINE_CONTENT_INSET_X * 2 - scrollContainer.clientWidth
+    )
+    const nextScrollLeft = clamp(
+      itemLeft - Math.max(32, (scrollContainer.clientWidth - itemWidth) / 2),
+      0,
+      maxScrollLeft
+    )
+    const nextScrollTop = Math.max(
+      0,
+      getTimelineTrackTop(getTrackIndex(item)) - RULER_HEIGHT - TRACK_GAP
+    )
+
+    scrollContainer.scrollTo({ left: nextScrollLeft, behavior: "smooth" })
+    verticalContainer?.scrollTo({ top: nextScrollTop, behavior: "smooth" })
+  }, [focusRequest, project.clips, project.musicTracks, width, zoom])
+
+  useEffect(() => {
     const container = timelineRef.current
 
     if (!container) {
@@ -4824,16 +5118,18 @@ function Timeline({
   }
 
   function updateDropPreview(event: DragEvent<HTMLDivElement>) {
-    if (!hasDraggedFiles(event.dataTransfer)) {
+    if (!hasDraggedTimelineMedia(event.dataTransfer)) {
       return
     }
 
     event.preventDefault()
     event.stopPropagation()
-    const draggedDuration = getTimelineDraggedFileDuration(
-      event.dataTransfer,
-      dropMetadataCacheRef.current
-    )
+    const draggedDuration =
+      draggedSourceAsset?.durationSeconds ??
+      getTimelineDraggedFileDuration(
+        event.dataTransfer,
+        dropMetadataCacheRef.current
+      )
     dropPreviewPointerRef.current = {
       clientX: event.clientX,
       clientY: event.clientY,
@@ -4880,7 +5176,7 @@ function Timeline({
   }
 
   async function dropFilesOnTimeline(event: DragEvent<HTMLDivElement>) {
-    if (!hasDraggedFiles(event.dataTransfer)) {
+    if (!hasDraggedTimelineMedia(event.dataTransfer)) {
       return
     }
 
@@ -4889,10 +5185,19 @@ function Timeline({
     const preview =
       dropPreview ??
       getTimelineDropPreview(event, zoom, duration, TIMELINE_CONTENT_INSET_X)
-    const dropped = await getDroppedLocalFiles(event.dataTransfer)
+    const sourceAssetId =
+      getTimelineDraggedSourceAssetId(event.dataTransfer) ??
+      draggedSourceAsset?.id
 
     setDropPreview(null)
     dropPreviewPointerRef.current = null
+
+    if (sourceAssetId) {
+      onDropSourceAsset(sourceAssetId, preview.placement)
+      return
+    }
+
+    const dropped = await getDroppedLocalFiles(event.dataTransfer)
 
     if (dropped.length > 0) {
       onDropFiles(dropped, preview.placement)
@@ -5979,6 +6284,43 @@ function getTrackCount(items: { trackIndex?: number }[]) {
   )
 }
 
+function compactProjectTimelineTracks(project: Project): Project {
+  const usedTrackIndexes = Array.from(
+    new Set(
+      [...project.clips, ...project.musicTracks].map((item) =>
+        getTrackIndex(item)
+      )
+    )
+  ).sort((a, b) => a - b)
+
+  if (usedTrackIndexes.length === 0) {
+    return project
+  }
+
+  const trackIndexMap = new Map(
+    usedTrackIndexes.map((trackIndex, nextTrackIndex) => [
+      trackIndex,
+      nextTrackIndex,
+    ])
+  )
+  let changed = false
+  const remapTrackIndex = <T extends { trackIndex?: number }>(item: T): T => {
+    const currentTrackIndex = getTrackIndex(item)
+    const nextTrackIndex = trackIndexMap.get(currentTrackIndex) ?? 0
+
+    if (nextTrackIndex === currentTrackIndex) {
+      return item
+    }
+
+    changed = true
+    return { ...item, trackIndex: nextTrackIndex }
+  }
+  const clips = project.clips.map(remapTrackIndex)
+  const musicTracks = project.musicTracks.map(remapTrackIndex)
+
+  return changed ? { ...project, clips, musicTracks } : project
+}
+
 function getTimelineItemSourceDuration(
   item: TimelineItemData,
   sourceAssets: SourceAsset[]
@@ -6151,6 +6493,21 @@ function getTimelineDraggedFileKey(file: File) {
 
 function hasDraggedFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types).includes("Files")
+}
+
+function hasDraggedTimelineMedia(dataTransfer: DataTransfer) {
+  const types = Array.from(dataTransfer.types)
+
+  return (
+    hasDraggedFiles(dataTransfer) ||
+    types.includes(TIMELINE_SOURCE_ASSET_DRAG_TYPE)
+  )
+}
+
+function getTimelineDraggedSourceAssetId(dataTransfer: DataTransfer) {
+  const id = dataTransfer.getData(TIMELINE_SOURCE_ASSET_DRAG_TYPE)
+
+  return id === "" ? null : id
 }
 
 function getTimelineItemDragPreview<T extends TimelineItemData>(
