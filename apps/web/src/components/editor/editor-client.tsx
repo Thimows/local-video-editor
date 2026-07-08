@@ -139,6 +139,7 @@ const MIN_ITEM_DURATION_SECONDS = 0.2
 const PREVIEW_PRELOAD_SECONDS = 0.75
 const PREVIEW_EDGE_SAMPLE_SECONDS = 1 / 60
 const PREVIEW_SCRUB_SETTLE_MS = 220
+const PREVIEW_IDLE_FULL_RESOLUTION_FRAME_DELAY_MS = 220
 const PREVIEW_PROXY_PROGRESS_UI_INTERVAL_MS = 250
 const PREVIEW_PROXY_LOADING_RETRY_MS = 2000
 const PREVIEW_PROXY_VISIBLE_PRIORITY = 100
@@ -2485,6 +2486,10 @@ function PreviewStage({
   const [previewProxyMap, setPreviewProxyMap] = useState<PreviewProxyMap>({})
   const [previewProxyAssetProgress, setPreviewProxyAssetProgress] =
     useState<PreviewProxyAssetProgressMap>({})
+  const [
+    fullResolutionIdleFramePlayhead,
+    setFullResolutionIdleFramePlayhead,
+  ] = useState<number | null>(null)
   const isPreviewStageMountedRef = useRef(true)
   const referencedPreviewAssetIdsRef = useRef<Set<string>>(new Set())
   const scheduledPreviewProxyAssetsRef = useRef<Set<string>>(new Set())
@@ -2494,6 +2499,7 @@ function PreviewStage({
   } | null>(null)
   const generatedPlayheadRef = useRef<number | null>(null)
   const previewProxyMapRef = useRef<PreviewProxyMap>({})
+  const previousIsPlayingRef = useRef(isPlaying)
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -2642,6 +2648,28 @@ function PreviewStage({
     isPreviewProxySegmentLoading || isPreviewProxyBackgroundLoading
   const previewProxyLoadingProgress =
     previewProxyBackgroundProgress?.progress ?? null
+
+  const shouldRenderFullResolutionIdleFrame =
+    Boolean(previewProxyScale) &&
+    !isPlaying &&
+    !isScrubbing &&
+    fullResolutionIdleFramePlayhead !== null &&
+    Math.abs(fullResolutionIdleFramePlayhead - playheadSeconds) < 0.000001
+
+  useEffect(() => {
+    const wasPlaying = previousIsPlayingRef.current
+    previousIsPlayingRef.current = isPlaying
+
+    if (!previewProxyScale || isPlaying || isScrubbing) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setFullResolutionIdleFramePlayhead(playheadSeconds)
+    }, wasPlaying ? 0 : PREVIEW_IDLE_FULL_RESOLUTION_FRAME_DELAY_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [isPlaying, isScrubbing, playheadSeconds, previewProxyScale])
 
   useEffect(
     () => {
@@ -3178,6 +3206,10 @@ function PreviewStage({
                 proxyEntry?.status === "ready" &&
                 proxyEntry.fingerprint === proxyFingerprint &&
                 isSourceTimeInPreviewProxySegment(clipSourceTime, proxyEntry)
+              const useFullResolutionIdleFrame =
+                shouldRenderFullResolutionIdleFrame &&
+                activeClipIds.has(clip.id) &&
+                canUseProxyEntry
               const videoRuntimeAsset = canUseProxyEntry
                 ? proxyEntry.runtimeAsset
                 : runtimeAsset
@@ -3195,6 +3227,7 @@ function PreviewStage({
                   audioRuntimeAsset={runtimeAsset}
                   videoRuntimeAsset={videoRuntimeAsset}
                   videoSourceOffsetSeconds={videoSourceOffsetSeconds}
+                  useFullResolutionIdleFrame={useFullResolutionIdleFrame}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
                   isScrubbing={isScrubbing}
@@ -3497,6 +3530,7 @@ function PreviewVideoLayer({
   audioRuntimeAsset,
   videoRuntimeAsset,
   videoSourceOffsetSeconds,
+  useFullResolutionIdleFrame,
   playheadSeconds,
   isPlaying,
   isScrubbing,
@@ -3512,6 +3546,7 @@ function PreviewVideoLayer({
   audioRuntimeAsset: RuntimeAsset
   videoRuntimeAsset: RuntimeAsset
   videoSourceOffsetSeconds: number
+  useFullResolutionIdleFrame: boolean
   playheadSeconds: number
   isPlaying: boolean
   isScrubbing: boolean
@@ -3521,10 +3556,31 @@ function PreviewVideoLayer({
   onIssue: (issue: string | null) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const idleFrameVideoRef = useRef<HTMLVideoElement>(null)
   const activeObjectUrlRef = useRef<string | null>(null)
+  const activeIdleFrameObjectUrlRef = useRef<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const activeAudioObjectUrlRef = useRef<string | null>(null)
   const audioControllerRef = useRef<PreviewAudioController | null>(null)
+  const [
+    readyFullResolutionIdleFrameKey,
+    setReadyFullResolutionIdleFrameKey,
+  ] = useState<string | null>(null)
+  const playheadSourceTime = getSourceTimeForTimelineItem(
+    {
+      sourceStartSeconds: clip.sourceStartSeconds,
+      sourceEndSeconds: clip.sourceEndSeconds,
+      timelineStartSeconds: clip.timelineStartSeconds,
+    },
+    playheadSeconds
+  )
+  const fullResolutionIdleFrameKey = [
+    audioRuntimeAsset.objectUrl,
+    playheadSourceTime.toFixed(6),
+  ].join(":")
+  const shouldShowFullResolutionIdleFrame =
+    useFullResolutionIdleFrame &&
+    readyFullResolutionIdleFrameKey === fullResolutionIdleFrameKey
   const clipAudioSettingsRef = useRef({
     isActive,
     muted: clip.muted,
@@ -3683,6 +3739,97 @@ function PreviewVideoLayer({
   ])
 
   useEffect(() => {
+    const player = idleFrameVideoRef.current
+
+    if (!player || !useFullResolutionIdleFrame) {
+      return
+    }
+
+    const sourceChanged =
+      activeIdleFrameObjectUrlRef.current !== audioRuntimeAsset.objectUrl
+    const visibleVideo = videoRef.current
+    const visibleVideoSourceTime =
+      visibleVideo &&
+      activeObjectUrlRef.current === videoRuntimeAsset.objectUrl &&
+      visibleVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      Number.isFinite(visibleVideo.currentTime)
+        ? visibleVideo.currentTime + videoSourceOffsetSeconds
+        : playheadSourceTime
+    const targetTime = clamp(
+      visibleVideoSourceTime,
+      clip.sourceStartSeconds,
+      Math.max(
+        clip.sourceStartSeconds,
+        clip.sourceEndSeconds - PREVIEW_EDGE_SAMPLE_SECONDS
+      )
+    )
+    const readyKey = fullResolutionIdleFrameKey
+    let cancelled = false
+
+    async function syncFullResolutionIdleFrame() {
+      if (!player) {
+        return
+      }
+
+      player.pause()
+      player.muted = true
+
+      if (sourceChanged) {
+        player.src = audioRuntimeAsset.objectUrl
+        activeIdleFrameObjectUrlRef.current = audioRuntimeAsset.objectUrl
+        await waitForMediaMetadata(player)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      if (
+        Number.isFinite(targetTime) &&
+        Math.abs(player.currentTime - targetTime) > 0.01
+      ) {
+        player.currentTime = targetTime
+        await waitForMediaSeek(player)
+      }
+
+      await waitForMediaCurrentData(player)
+      await waitForAnimationFrame()
+
+      if (cancelled) {
+        return
+      }
+
+      if (player.videoWidth > 0 && player.videoHeight > 0) {
+        onIssue(null)
+        setReadyFullResolutionIdleFrameKey(readyKey)
+      }
+    }
+
+    syncFullResolutionIdleFrame().catch(() => {
+      if (!cancelled) {
+        setReadyFullResolutionIdleFrameKey((current) =>
+          current === readyKey ? null : current
+        )
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    audioRuntimeAsset.objectUrl,
+    clip.sourceEndSeconds,
+    clip.sourceStartSeconds,
+    clip.timelineStartSeconds,
+    fullResolutionIdleFrameKey,
+    onIssue,
+    playheadSourceTime,
+    useFullResolutionIdleFrame,
+    videoRuntimeAsset.objectUrl,
+    videoSourceOffsetSeconds,
+  ])
+
+  useEffect(() => {
     const player = audioRef.current
 
     if (!player) {
@@ -3800,6 +3947,21 @@ function PreviewVideoLayer({
               onIssue(null)
             }
           }}
+        />
+        <video
+          ref={idleFrameVideoRef}
+          className={[
+            "absolute inset-0 block size-full bg-card object-contain",
+            shouldShowFullResolutionIdleFrame ? "opacity-100" : "opacity-0",
+          ].join(" ")}
+          muted
+          playsInline
+          preload="metadata"
+          onError={() =>
+            setReadyFullResolutionIdleFrameKey((current) =>
+              current === fullResolutionIdleFrameKey ? null : current
+            )
+          }
         />
       </div>
       <audio ref={audioRef} preload="auto" />
@@ -6588,6 +6750,38 @@ function waitForMediaSeek(media: HTMLMediaElement) {
     media.addEventListener("seeked", onSeeked, { once: true })
     media.addEventListener("error", onError, { once: true })
   })
+}
+
+function waitForMediaCurrentData(media: HTMLMediaElement) {
+  if (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    function cleanup() {
+      media.removeEventListener("loadeddata", onLoadedData)
+      media.removeEventListener("canplay", onLoadedData)
+      media.removeEventListener("error", onError)
+    }
+
+    function onLoadedData() {
+      cleanup()
+      resolve()
+    }
+
+    function onError() {
+      cleanup()
+      reject(new Error("Could not load media frame"))
+    }
+
+    media.addEventListener("loadeddata", onLoadedData, { once: true })
+    media.addEventListener("canplay", onLoadedData, { once: true })
+    media.addEventListener("error", onError, { once: true })
+  })
+}
+
+function waitForAnimationFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 }
 
 function getTimelineSeconds(
