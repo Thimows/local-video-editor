@@ -293,6 +293,10 @@
     @apply bg-background text-foreground;
     overscroll-behavior: none;
   }
+
+  :where(a, button, [role="button"]) {
+    cursor: default;
+  }
 }
 
 @layer utilities {
