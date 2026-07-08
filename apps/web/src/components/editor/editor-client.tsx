@@ -275,6 +275,11 @@ const ASPECT_RATIO_OPTIONS = [
   },
 ] as const
 
+const FRAME_RATE_OPTIONS = [
+  { label: "30 fps", value: "30", fps: 30 },
+  { label: "60 fps", value: "60", fps: 60 },
+] as const
+
 type InspectorView = "project" | "selection" | "files"
 
 type SourceAssetGroup = {
@@ -2002,6 +2007,23 @@ function ProjectSettingsFields({
           }
         }}
       />
+      <FluidSelectField
+        label="Frame rate"
+        value={String(project.exportSettings.fps)}
+        options={FRAME_RATE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: option.value,
+        }))}
+        onValueChange={(value) => {
+          const nextFrameRate = FRAME_RATE_OPTIONS.find(
+            (option) => option.value === value
+          )
+
+          if (nextFrameRate) {
+            onProjectChange({ fps: nextFrameRate.fps })
+          }
+        }}
+      />
     </div>
   )
 }
@@ -3228,6 +3250,9 @@ function PreviewStage({
                   videoRuntimeAsset={videoRuntimeAsset}
                   videoSourceOffsetSeconds={videoSourceOffsetSeconds}
                   useFullResolutionIdleFrame={useFullResolutionIdleFrame}
+                  fullResolutionIdleFrameOffsetSeconds={
+                    1 / project.exportSettings.fps
+                  }
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
                   isScrubbing={isScrubbing}
@@ -3531,6 +3556,7 @@ function PreviewVideoLayer({
   videoRuntimeAsset,
   videoSourceOffsetSeconds,
   useFullResolutionIdleFrame,
+  fullResolutionIdleFrameOffsetSeconds,
   playheadSeconds,
   isPlaying,
   isScrubbing,
@@ -3547,6 +3573,7 @@ function PreviewVideoLayer({
   videoRuntimeAsset: RuntimeAsset
   videoSourceOffsetSeconds: number
   useFullResolutionIdleFrame: boolean
+  fullResolutionIdleFrameOffsetSeconds: number
   playheadSeconds: number
   isPlaying: boolean
   isScrubbing: boolean
@@ -3577,6 +3604,7 @@ function PreviewVideoLayer({
   const fullResolutionIdleFrameKey = [
     audioRuntimeAsset.objectUrl,
     playheadSourceTime.toFixed(6),
+    fullResolutionIdleFrameOffsetSeconds.toFixed(6),
   ].join(":")
   const shouldShowFullResolutionIdleFrame =
     useFullResolutionIdleFrame &&
@@ -3756,7 +3784,7 @@ function PreviewVideoLayer({
         ? visibleVideo.currentTime + videoSourceOffsetSeconds
         : playheadSourceTime
     const targetTime = clamp(
-      visibleVideoSourceTime,
+      visibleVideoSourceTime + fullResolutionIdleFrameOffsetSeconds,
       clip.sourceStartSeconds,
       Math.max(
         clip.sourceStartSeconds,
@@ -3821,6 +3849,7 @@ function PreviewVideoLayer({
     clip.sourceEndSeconds,
     clip.sourceStartSeconds,
     clip.timelineStartSeconds,
+    fullResolutionIdleFrameOffsetSeconds,
     fullResolutionIdleFrameKey,
     onIssue,
     playheadSourceTime,
