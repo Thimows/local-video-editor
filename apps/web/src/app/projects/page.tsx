@@ -15,12 +15,21 @@ export const metadata: Metadata = {
       "Create, open, and manage local-first browser video editing projects without uploading source media.",
     type: "website",
     url: "/projects",
+    images: [
+      {
+        url: "/landing/og-preview.png",
+        width: 1800,
+        height: 945,
+        alt: "Local Video Editor preview",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Local Video Editor Projects",
     description:
       "Create, open, and manage local-first browser video editing projects without uploading source media.",
+    images: ["/landing/og-preview.png"],
   },
 }
 

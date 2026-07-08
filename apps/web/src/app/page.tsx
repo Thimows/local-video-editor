@@ -204,8 +204,8 @@ export default function Page() {
                   <Image
                     src="/landing/editor-light.webp"
                     alt="Local Video Editor timeline and preview in light mode"
-                    width={1800}
-                    height={1356}
+                    width={2820}
+                    height={2126}
                     priority
                     sizes="(min-width: 1280px) 800px, (min-width: 1024px) 720px, 500px"
                     className="block w-full max-w-none dark:hidden"
@@ -213,8 +213,8 @@ export default function Page() {
                   <Image
                     src="/landing/editor-dark.webp"
                     alt="Local Video Editor timeline and preview in dark mode"
-                    width={1800}
-                    height={1356}
+                    width={2820}
+                    height={2126}
                     priority
                     sizes="(min-width: 1280px) 800px, (min-width: 1024px) 720px, 500px"
                     className="hidden w-full max-w-none dark:block"
