@@ -38,6 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
+import { trackAnalyticsEvent } from "@/lib/analytics/posthog"
 import {
   EXPORT_COMPRESSION_OPTIONS,
   getEstimatedExportSizeBytes,
@@ -715,6 +716,12 @@ export function EditorClient() {
 
       publishLocalFileDebug("project-loaded", loadedProject)
       requestPersistentStorage().catch(() => false)
+      trackAnalyticsEvent("editor_opened", {
+        source_asset_count: loadedProject.sourceAssets.length,
+        clip_count: loadedProject.clips.length,
+        music_track_count: loadedProject.musicTracks.length,
+        project_duration_seconds: Math.round(getProjectDuration(loadedProject)),
+      })
 
       restoreSavedFileHandles(loadedProject, false)
     })
@@ -803,7 +810,36 @@ export function EditorClient() {
   }, [exportState])
 
   useEffect(() => {
+    const startedAt = Date.now()
+    let didTrackSessionEnd = false
+
+    function trackEditorSessionEnd() {
+      if (didTrackSessionEnd) {
+        return
+      }
+
+      didTrackSessionEnd = true
+      trackAnalyticsEvent("editor_session_ended", {
+        duration_seconds: Math.max(
+          0,
+          Math.round((Date.now() - startedAt) / 1000)
+        ),
+      })
+    }
+
+    function trackEditorSessionHidden() {
+      if (document.visibilityState === "hidden") {
+        trackEditorSessionEnd()
+      }
+    }
+
+    document.addEventListener("visibilitychange", trackEditorSessionHidden)
+    window.addEventListener("pagehide", trackEditorSessionEnd)
+
     return () => {
+      document.removeEventListener("visibilitychange", trackEditorSessionHidden)
+      window.removeEventListener("pagehide", trackEditorSessionEnd)
+      trackEditorSessionEnd()
       Object.values(runtimeAssetsRef.current).forEach((asset) =>
         URL.revokeObjectURL(asset.objectUrl)
       )
@@ -1544,6 +1580,13 @@ export function EditorClient() {
     })
 
     try {
+      trackAnalyticsEvent("export_started", {
+        source_asset_count: project.sourceAssets.length,
+        clip_count: project.clips.length,
+        music_track_count: project.musicTracks.length,
+        project_duration_seconds: Math.round(getProjectDuration(project)),
+        export_format: project.exportSettings.format,
+      })
       const result = await exportProjectToVideo({
         project,
         runtimeAssets,
@@ -1564,7 +1607,14 @@ export function EditorClient() {
         extension: result.extension,
         url,
       })
+      trackAnalyticsEvent("export_completed", {
+        output_size_bytes: result.blob.size,
+        export_format: result.extension,
+      })
     } catch (reason) {
+      trackAnalyticsEvent("export_failed", {
+        export_format: project.exportSettings.format,
+      })
       setExportState({
         progress: 0,
         message: reason instanceof Error ? reason.message : "Export failed",

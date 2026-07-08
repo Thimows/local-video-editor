@@ -3,6 +3,7 @@ import localFont from "next/font/local"
 import type { Metadata } from "next"
 
 import "@workspace/ui/globals.css"
+import { AnalyticsPageView } from "@/components/analytics-page-view"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { Toaster } from "@/components/toaster"
@@ -88,6 +89,7 @@ export default function RootLayout({
               <SurfaceProvider value={1}>
                 <TooltipProvider>
                   <ServiceWorkerRegister />
+                  <AnalyticsPageView />
                   {children}
                   <Toaster />
                 </TooltipProvider>
