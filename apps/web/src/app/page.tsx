@@ -27,11 +27,15 @@ export const metadata: Metadata = {
     "no watermark video editor",
     "private video editing",
   ],
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     title: "Free Local Video Editor",
     description:
       "Edit and export videos in your browser without uploading files, accounts, cloud processing, or watermarks.",
     type: "website",
+    url: "/",
   },
   twitter: {
     card: "summary_large_image",

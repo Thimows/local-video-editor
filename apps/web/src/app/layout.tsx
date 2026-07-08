@@ -20,13 +20,48 @@ const fontPixel = localFont({
   variable: "--font-pixel",
 })
 
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ??
+  "https://localvideoeditor.com"
+
 export const metadata: Metadata = {
-  title: "Local Video Editor",
-  description: "Edit and export videos privately in your browser.",
+  metadataBase: new URL(siteUrl),
+  title: "Local Video Editor | Free Offline Browser Video Editing",
+  description:
+    "Edit and export videos in your browser without uploading files. A free, local-first video editor with no watermark and offline-first project storage.",
   applicationName: "Local Video Editor",
+  creator: "@thmawa",
+  publisher: "Local Video Editor",
+  category: "video editing",
+  keywords: [
+    "local video editor",
+    "offline video editor",
+    "free video editor",
+    "browser video editor",
+    "private video editing",
+    "no watermark video editor",
+  ],
+  robots: {
+    index: true,
+    follow: true,
+  },
   appleWebApp: {
     capable: true,
     title: "Local Video Editor",
+  },
+  openGraph: {
+    siteName: "Local Video Editor",
+    title: "Local Video Editor | Free Offline Browser Video Editing",
+    description:
+      "Edit and export videos in your browser without uploading files, accounts, cloud processing, or watermarks.",
+    type: "website",
+    url: "/",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Local Video Editor | Free Offline Browser Video Editing",
+    description:
+      "Edit and export videos in your browser without uploading files, accounts, cloud processing, or watermarks.",
   },
 }
 
