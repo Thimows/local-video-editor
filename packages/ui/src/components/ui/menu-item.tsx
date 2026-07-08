@@ -188,7 +188,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
             sizer and the visible label keep identical boxes. */}
         <span className="inline-grid min-w-0 flex-1 text-[13px]">
           <span
-            className="col-start-1 row-start-1 truncate invisible [text-box:trim-both_cap_alphabetic]"
+            className="col-start-1 row-start-1 truncate invisible [text-box:trim-both_cap_alphabetic] py-1 -my-1"
             style={{ fontVariationSettings: fontWeights.semibold }}
             aria-hidden="true"
           >
@@ -196,7 +196,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
           </span>
           <span
             className={cn(
-              "col-start-1 row-start-1 truncate transition-[color,font-variation-settings] duration-80 [text-box:trim-both_cap_alphabetic]",
+              "col-start-1 row-start-1 truncate transition-[color,font-variation-settings] duration-80 [text-box:trim-both_cap_alphabetic] py-1 -my-1",
               isActive || checked
                 ? "text-foreground"
                 : "text-muted-foreground"
