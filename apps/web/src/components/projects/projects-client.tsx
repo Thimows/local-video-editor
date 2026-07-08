@@ -12,7 +12,7 @@ import {
   IconVideoFilled as Film,
 } from "@tabler/icons-react"
 import { formatDistanceToNow } from "date-fns"
-import { type FormEvent, useEffect, useState } from "react"
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
 import { createEmptyProject } from "@/lib/editor/project"
@@ -35,8 +35,13 @@ import {
 import { MenuItem } from "@workspace/ui/components/ui/menu-item"
 import { Tooltip } from "@workspace/ui/components/ui/tooltip"
 
-export function ProjectsClient() {
+export function ProjectsClient({
+  autoOpenCreateDialog = false,
+}: {
+  autoOpenCreateDialog?: boolean
+}) {
   const router = useRouter()
+  const didAutoOpenCreateDialogRef = useRef(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [name, setName] = useState("")
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
@@ -47,14 +52,18 @@ export function ProjectsClient() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    refreshProjects()
-  }, [])
-
-  async function refreshProjects() {
+  const refreshProjects = useCallback(async () => {
     try {
-      setIsLoading(true)
-      setProjects(await listProjects())
+      const nextProjects = await listProjects()
+      setProjects(nextProjects)
+      if (
+        autoOpenCreateDialog &&
+        !didAutoOpenCreateDialogRef.current &&
+        nextProjects.length === 0
+      ) {
+        didAutoOpenCreateDialogRef.current = true
+        setIsCreateDialogOpen(true)
+      }
       setError(null)
     } catch (reason) {
       setError(
@@ -63,7 +72,15 @@ export function ProjectsClient() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [autoOpenCreateDialog])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      refreshProjects()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [refreshProjects])
 
   async function createProject(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
@@ -127,7 +144,7 @@ export function ProjectsClient() {
           <div className="mx-auto grid w-full max-w-4xl gap-3">
             <div className="space-y-1.5">
               <div className="flex items-center gap-1.5">
-                <h1 className="text-xl font-semibold tracking-normal">
+                <h1 className="text-xl font-semibold tracking-tight">
                   Projects
                 </h1>
                 <Tooltip
@@ -163,7 +180,9 @@ export function ProjectsClient() {
                 <div className="grid min-h-72 place-items-center rounded-xl bg-background p-8 text-center">
                   <div className="max-w-sm space-y-3">
                     <HardDrive className="mx-auto size-8 text-muted-foreground" />
-                    <h2 className="text-lg font-medium">No projects yet</h2>
+                    <h2 className="text-lg font-medium tracking-tight">
+                      No projects yet
+                    </h2>
                     <p className="text-sm leading-6 text-muted-foreground">
                       Create a project, import local media, and the timeline
                       decisions will persist on this device.
@@ -185,7 +204,7 @@ export function ProjectsClient() {
                     className="grid gap-3 rounded-xl bg-background px-4 py-4 md:grid-cols-[1fr_auto] md:items-center"
                   >
                     <div className="min-w-0 space-y-1.5">
-                      <h2 className="truncate text-sm font-medium">
+                      <h2 className="truncate text-sm font-medium tracking-tight">
                         {project.name}
                       </h2>
                       <p className="text-sm text-muted-foreground">
