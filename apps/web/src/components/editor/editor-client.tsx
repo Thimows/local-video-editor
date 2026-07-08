@@ -13,6 +13,7 @@ import {
   IconExclamationCircleFilled as CircleExclamation,
   IconFileDownloadFilled as Download,
   IconHandStop as HandStop,
+  IconLoader2 as Loader,
   IconMagnet as Magnet,
   IconMagnetOff as MagnetOff,
   IconMoonFilled as Moon,
@@ -67,6 +68,18 @@ import {
   getClipDuration,
   getProjectDuration,
 } from "@/lib/editor/project"
+import {
+  canCreatePreviewProxy,
+  deletePreviewProxiesForAssets,
+  ensurePreviewProxy,
+  getPreviewProxySegmentBounds,
+  getPreviewProxySegmentCount,
+  getPreviewProxySegmentIndex,
+  getSourceAssetPreviewFingerprint,
+  getSourceFileFingerprint,
+  isSourceTimeInPreviewProxySegment,
+  type PreviewProxyScale,
+} from "@/lib/editor/preview-proxy"
 import {
   extractTimelineWaveform,
   getRuntimeAssetFingerprint,
@@ -126,6 +139,10 @@ const MIN_ITEM_DURATION_SECONDS = 0.2
 const PREVIEW_PRELOAD_SECONDS = 0.75
 const PREVIEW_EDGE_SAMPLE_SECONDS = 1 / 60
 const PREVIEW_SCRUB_SETTLE_MS = 220
+const PREVIEW_PROXY_PROGRESS_UI_INTERVAL_MS = 250
+const PREVIEW_PROXY_LOADING_RETRY_MS = 2000
+const PREVIEW_PROXY_VISIBLE_PRIORITY = 100
+const PREVIEW_PROXY_BACKGROUND_PRIORITY = 0
 const SNAP_OVERLAP_SECONDS = 0.001
 const TIMELINE_EPSILON_SECONDS = 1 / 120
 const TIMELINE_PRECISION_SECONDS = 1_000
@@ -137,12 +154,46 @@ const TIMELINE_DROP_FALLBACK_MIN_WIDTH = 120
 const SUPPORTED_MEDIA_EXTENSIONS = "MP4, MOV, M4V, WebM, MP3, M4A, WAV, OGG"
 const PREVIEW_RESOLUTION_OPTIONS = [
   { label: "Full resolution", value: "full", scale: 1 },
-  { label: "Half resolution", value: "half", scale: 0.5 },
-  { label: "Quarter resolution", value: "quarter", scale: 0.25 },
+  { label: "Low resolution", value: "half", scale: 0.5 },
 ] as const
 type PreviewResolutionScale =
   (typeof PREVIEW_RESOLUTION_OPTIONS)[number]["scale"]
 const DEFAULT_PREVIEW_RESOLUTION_SCALE: PreviewResolutionScale = 0.5
+type PreviewProxyEntry =
+  | {
+      status: "loading"
+      assetId: string
+      fingerprint: string
+      processedTimeSeconds: number
+      progress: number
+      requestedAt: number
+      scale: PreviewProxyScale
+      segmentIndex: number
+    }
+  | {
+      status: "ready"
+      assetId: string
+      fingerprint: string
+      runtimeAsset: RuntimeAsset
+      scale: PreviewProxyScale
+      segmentIndex: number
+      sourceEndSeconds: number
+      sourceStartSeconds: number
+    }
+  | {
+      status: "error"
+      assetId: string
+      fingerprint: string
+      scale: PreviewProxyScale
+      segmentIndex: number
+    }
+type PreviewProxyMap = Record<string, PreviewProxyEntry>
+type PreviewProxyAssetProgress = {
+  completed: number
+  failed: number
+  total: number
+}
+type PreviewProxyAssetProgressMap = Record<string, PreviewProxyAssetProgress>
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
@@ -380,6 +431,7 @@ export function EditorClient() {
   const topPanelRef = useRef<HTMLDivElement>(null)
   const runtimeAssetsRef = useRef<RuntimeAssetMap>({})
   const timelineScrubSettleTimeoutRef = useRef<number | null>(null)
+  const cleanedPreviewProxyAssetIdsRef = useRef<Set<string>>(new Set())
 
   const selectEditorSelection = useCallback((nextSelection: Selection) => {
     setSelection(nextSelection)
@@ -668,6 +720,48 @@ export function EditorClient() {
   }, [runtimeAssets])
 
   useEffect(() => {
+    if (!project) {
+      return
+    }
+
+    const referencedAssetIds = new Set(
+      [...project.clips, ...project.musicTracks].map(
+        (item) => item.sourceAssetId
+      )
+    )
+    const referencedVideoFingerprints = new Set(
+      project.sourceAssets
+        .filter(
+          (asset) =>
+            asset.type === "video" && referencedAssetIds.has(asset.id)
+        )
+        .map((asset) => getSourceAssetPreviewFingerprint(asset))
+    )
+    const unreferencedVideoAssets = project.sourceAssets.filter(
+      (asset) =>
+        asset.type === "video" &&
+        !referencedAssetIds.has(asset.id) &&
+        !referencedVideoFingerprints.has(
+          getSourceAssetPreviewFingerprint(asset)
+        ) &&
+        !cleanedPreviewProxyAssetIdsRef.current.has(asset.id)
+    )
+
+    referencedAssetIds.forEach((assetId) =>
+      cleanedPreviewProxyAssetIdsRef.current.delete(assetId)
+    )
+
+    if (unreferencedVideoAssets.length === 0) {
+      return
+    }
+
+    unreferencedVideoAssets.forEach((asset) =>
+      cleanedPreviewProxyAssetIdsRef.current.add(asset.id)
+    )
+    deletePreviewProxiesForAssets(unreferencedVideoAssets).catch(() => undefined)
+  }, [project])
+
+  useEffect(() => {
     exportStateRef.current = exportState
   }, [exportState])
 
@@ -771,6 +865,7 @@ export function EditorClient() {
         width: metadata.width,
         height: metadata.height,
         createdAt: Date.now(),
+        fingerprint: getSourceFileFingerprint(file),
         fileHandle,
         fileBlob,
       }
@@ -1228,6 +1323,7 @@ export function EditorClient() {
           ? {
               ...item,
               durationSeconds: metadata.durationSeconds ?? item.durationSeconds,
+              fingerprint: getSourceFileFingerprint(file),
               fileHandle: fileHandle ?? item.fileHandle,
               fileBlob: getPersistedFileBlob(file),
               height: metadata.height ?? item.height,
@@ -2386,11 +2482,18 @@ function PreviewStage({
   const [previewAudioContext, setPreviewAudioContext] =
     useState<AudioContext | null>(null)
   const [previewIssues, setPreviewIssues] = useState<Record<string, string>>({})
+  const [previewProxyMap, setPreviewProxyMap] = useState<PreviewProxyMap>({})
+  const [previewProxyAssetProgress, setPreviewProxyAssetProgress] =
+    useState<PreviewProxyAssetProgressMap>({})
+  const isPreviewStageMountedRef = useRef(true)
+  const referencedPreviewAssetIdsRef = useRef<Set<string>>(new Set())
+  const scheduledPreviewProxyAssetsRef = useRef<Set<string>>(new Set())
   const playbackClockRef = useRef<{
     playheadSeconds: number
     startedAt: number
   } | null>(null)
   const generatedPlayheadRef = useRef<number | null>(null)
+  const previewProxyMapRef = useRef<PreviewProxyMap>({})
   const sortedClips = useMemo(
     () =>
       [...project.clips].sort(
@@ -2436,14 +2539,454 @@ function PreviewStage({
   const projectDuration = getProjectDuration(project)
   const previewAspectRatio = getExportAspectRatio(project.exportSettings)
   const previewRenderScale = clampPreviewResolutionScale(previewResolutionScale)
+  const previewProxyScale = getPreviewProxyScale(previewRenderScale)
+  const previewProxyCandidates = useMemo(() => {
+    if (!previewProxyScale) {
+      return []
+    }
+
+    const assetsById = new Map(
+      project.sourceAssets.map((asset) => [asset.id, asset])
+    )
+    const uniqueCandidates = new Map<
+      string,
+      {
+        asset: SourceAsset
+        runtimeAsset: RuntimeAsset
+        segmentIndex: number
+        sourceTimeSeconds: number
+      }
+    >()
+
+    for (const clip of previewClips) {
+      const asset = assetsById.get(clip.sourceAssetId)
+      const runtimeAsset = runtimeAssets[clip.sourceAssetId]
+
+      if (
+        asset?.type === "video" &&
+        runtimeAsset &&
+        canCreatePreviewProxy(asset)
+      ) {
+        const sourceTimeSeconds = getSourceTimeForTimelineItem(
+          {
+            sourceEndSeconds: clip.sourceEndSeconds,
+            sourceStartSeconds: clip.sourceStartSeconds,
+            timelineStartSeconds: clip.timelineStartSeconds,
+          },
+          playheadSeconds
+        )
+        const segmentIndex = getPreviewProxySegmentIndex(sourceTimeSeconds)
+        const segment = getPreviewProxySegmentBounds(asset, segmentIndex)
+
+        if (segment.sourceEndSeconds <= segment.sourceStartSeconds) {
+          continue
+        }
+
+        uniqueCandidates.set(
+          getPreviewProxyEntryKey(asset.id, previewProxyScale, segmentIndex),
+          { asset, runtimeAsset, segmentIndex, sourceTimeSeconds }
+        )
+      }
+    }
+
+    return Array.from(uniqueCandidates.values())
+  }, [
+    playheadSeconds,
+    previewClips,
+    previewProxyScale,
+    project.sourceAssets,
+    runtimeAssets,
+  ])
+  const isPreviewProxySegmentLoading = Boolean(
+    previewProxyScale &&
+      previewProxyCandidates.some(({ asset, segmentIndex }) => {
+        const entry =
+          previewProxyMap[
+            getPreviewProxyEntryKey(asset.id, previewProxyScale, segmentIndex)
+          ]
+        const fingerprint = getSourceAssetPreviewFingerprint(asset)
+
+        return (
+          !entry ||
+          entry.fingerprint !== fingerprint ||
+          entry.status === "loading"
+        )
+      })
+  )
+  const hasPreviewProxyError = Boolean(
+    previewProxyScale &&
+      previewProxyCandidates.some(({ asset, segmentIndex }) => {
+        const entry =
+          previewProxyMap[
+            getPreviewProxyEntryKey(asset.id, previewProxyScale, segmentIndex)
+          ]
+        const fingerprint = getSourceAssetPreviewFingerprint(asset)
+
+        return entry?.status === "error" && entry.fingerprint === fingerprint
+      })
+  )
+  const previewProxyBackgroundProgress = previewProxyScale
+    ? getPreviewProxyBackgroundProgress(
+        previewProxyCandidates,
+        previewProxyMap,
+        previewProxyAssetProgress,
+        previewProxyScale
+      )
+    : null
+  const isPreviewProxyBackgroundLoading = Boolean(
+    previewProxyBackgroundProgress &&
+      previewProxyBackgroundProgress.completed <
+        previewProxyBackgroundProgress.total
+  )
+  const isPreviewProxyLoading =
+    isPreviewProxySegmentLoading || isPreviewProxyBackgroundLoading
+  const previewProxyLoadingProgress =
+    previewProxyBackgroundProgress?.progress ?? null
 
   useEffect(
-    () => () => {
-      previewAudioContextRef.current?.close().catch(() => undefined)
-      previewAudioContextRef.current = null
+    () => {
+      isPreviewStageMountedRef.current = true
+
+      return () => {
+        isPreviewStageMountedRef.current = false
+        previewAudioContextRef.current?.close().catch(() => undefined)
+        previewAudioContextRef.current = null
+      }
     },
     []
   )
+
+  useEffect(() => {
+    previewProxyMapRef.current = previewProxyMap
+  }, [previewProxyMap])
+
+  useEffect(
+    () => () => {
+      for (const entry of Object.values(previewProxyMapRef.current)) {
+        if (entry.status === "ready") {
+          URL.revokeObjectURL(entry.runtimeAsset.objectUrl)
+        }
+      }
+    },
+    []
+  )
+
+  useEffect(() => {
+    const referencedAssetIds = new Set(
+      [...project.clips, ...project.musicTracks].map(
+        (item) => item.sourceAssetId
+      )
+    )
+
+    referencedPreviewAssetIdsRef.current = referencedAssetIds
+
+    const cleanupTimer = window.setTimeout(() => {
+      setPreviewProxyMap((current) => {
+        let changed = false
+        const next: PreviewProxyMap = {}
+
+        for (const [key, entry] of Object.entries(current)) {
+          if (!referencedAssetIds.has(entry.assetId)) {
+            changed = true
+
+            if (entry.status === "ready") {
+              URL.revokeObjectURL(entry.runtimeAsset.objectUrl)
+            }
+
+            continue
+          }
+
+          next[key] = entry
+        }
+
+        if (changed) {
+          previewProxyMapRef.current = next
+        }
+
+        return changed ? next : current
+      })
+    }, 0)
+
+    return () => window.clearTimeout(cleanupTimer)
+  }, [project.clips, project.musicTracks, project.sourceAssets])
+
+  const setPreviewProxyEntry = useCallback(
+    (entry: PreviewProxyEntry) => {
+      const key = getPreviewProxyEntryKey(
+        entry.assetId,
+        entry.scale,
+        entry.segmentIndex
+      )
+      const previous = previewProxyMapRef.current[key]
+
+      if (
+        previous?.status === "ready" &&
+        (entry.status !== "ready" ||
+          previous.runtimeAsset.objectUrl !== entry.runtimeAsset.objectUrl)
+      ) {
+        URL.revokeObjectURL(previous.runtimeAsset.objectUrl)
+      }
+
+      setPreviewProxyMap((current) => {
+        const next = {
+          ...current,
+          [key]: entry,
+        }
+
+        previewProxyMapRef.current = next
+
+        return next
+      })
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (!previewProxyScale) {
+      return
+    }
+
+    for (const {
+      asset,
+      runtimeAsset,
+      segmentIndex,
+      sourceTimeSeconds,
+    } of previewProxyCandidates) {
+      const fingerprint = getSourceAssetPreviewFingerprint(asset)
+      const current =
+        previewProxyMapRef.current[
+          getPreviewProxyEntryKey(asset.id, previewProxyScale, segmentIndex)
+        ]
+      const requestedAt = Date.now()
+      const isFreshLoading =
+        current?.fingerprint === fingerprint &&
+        current.status === "loading" &&
+        requestedAt - current.requestedAt < PREVIEW_PROXY_LOADING_RETRY_MS
+      let lastProgressUiUpdate = 0
+
+      if (
+        current?.fingerprint === fingerprint &&
+        (isFreshLoading ||
+          current.status === "ready" ||
+          current.status === "error")
+      ) {
+        continue
+      }
+
+      setPreviewProxyEntry({
+        status: "loading",
+        assetId: asset.id,
+        fingerprint,
+        processedTimeSeconds: 0,
+        progress: 0,
+        requestedAt,
+        scale: previewProxyScale,
+        segmentIndex,
+      })
+
+      ensurePreviewProxy({
+        asset,
+        runtimeAsset,
+        priority: PREVIEW_PROXY_VISIBLE_PRIORITY,
+        scale: previewProxyScale,
+        sourceTimeSeconds,
+        onProgress: (progress, processedTimeSeconds) => {
+          if (!isPreviewStageMountedRef.current) {
+            return
+          }
+
+          const now = performance.now()
+          const shouldUpdateUi =
+            progress >= 1 ||
+            now - lastProgressUiUpdate >=
+              PREVIEW_PROXY_PROGRESS_UI_INTERVAL_MS
+
+          if (!shouldUpdateUi) {
+            return
+          }
+
+          lastProgressUiUpdate = now
+          setPreviewProxyEntry({
+            status: "loading",
+            assetId: asset.id,
+            fingerprint,
+            processedTimeSeconds,
+            progress,
+            requestedAt,
+            scale: previewProxyScale,
+            segmentIndex,
+          })
+        },
+      })
+        .then((proxyFile) => {
+          if (!isPreviewStageMountedRef.current) {
+            return
+          }
+
+          if (!proxyFile) {
+            setPreviewProxyEntry({
+              status: "error",
+              assetId: asset.id,
+              fingerprint,
+              scale: previewProxyScale,
+              segmentIndex,
+            })
+            return
+          }
+
+          setPreviewProxyEntry({
+            status: "ready",
+            assetId: asset.id,
+            fingerprint,
+            runtimeAsset: createRuntimeAsset(proxyFile.file),
+            scale: previewProxyScale,
+            segmentIndex: proxyFile.segmentIndex,
+            sourceEndSeconds: proxyFile.sourceEndSeconds,
+            sourceStartSeconds: proxyFile.sourceStartSeconds,
+          })
+        })
+        .catch(() => {
+          if (
+            !isPreviewStageMountedRef.current ||
+            !referencedPreviewAssetIdsRef.current.has(asset.id)
+          ) {
+            return
+          }
+
+          setPreviewProxyEntry({
+            status: "error",
+            assetId: asset.id,
+            fingerprint,
+            scale: previewProxyScale,
+            segmentIndex,
+          })
+        })
+    }
+  }, [previewProxyCandidates, previewProxyScale, setPreviewProxyEntry])
+
+  useEffect(() => {
+    if (!previewProxyScale) {
+      return
+    }
+
+    const assetsToSchedule = new Map<
+      string,
+      {
+        asset: SourceAsset
+        runtimeAsset: RuntimeAsset
+        startSegmentIndex: number
+      }
+    >()
+
+    for (const { asset, runtimeAsset, segmentIndex } of previewProxyCandidates) {
+      const progressKey = getPreviewProxyAssetProgressKey(
+        asset,
+        previewProxyScale
+      )
+
+      if (!assetsToSchedule.has(progressKey)) {
+        assetsToSchedule.set(progressKey, {
+          asset,
+          runtimeAsset,
+          startSegmentIndex: segmentIndex,
+        })
+      }
+    }
+
+    for (const [progressKey, { asset, runtimeAsset, startSegmentIndex }] of
+      assetsToSchedule) {
+      if (scheduledPreviewProxyAssetsRef.current.has(progressKey)) {
+        continue
+      }
+
+      const total = getPreviewProxySegmentCount(asset)
+      const fingerprint = getSourceAssetPreviewFingerprint(asset)
+
+      scheduledPreviewProxyAssetsRef.current.add(progressKey)
+      setPreviewProxyAssetProgress((current) => ({
+        ...current,
+        [progressKey]: current[progressKey] ?? {
+          completed: 0,
+          failed: 0,
+          total,
+        },
+      }))
+
+      for (const segmentIndex of getPreviewProxyBackgroundSegmentOrder(
+        total,
+        startSegmentIndex
+      )) {
+        const segment = getPreviewProxySegmentBounds(asset, segmentIndex)
+
+        if (segment.sourceEndSeconds <= segment.sourceStartSeconds) {
+          incrementPreviewProxyAssetProgress(progressKey, false)
+          continue
+        }
+
+        ensurePreviewProxy({
+          asset,
+          runtimeAsset,
+          priority: PREVIEW_PROXY_BACKGROUND_PRIORITY,
+          scale: previewProxyScale,
+          sourceTimeSeconds: segment.sourceStartSeconds,
+        })
+          .then((proxyFile) => {
+            if (!isPreviewStageMountedRef.current) {
+              return
+            }
+
+            if (proxyFile) {
+              setPreviewProxyEntry({
+                status: "ready",
+                assetId: asset.id,
+                fingerprint,
+                runtimeAsset: createRuntimeAsset(proxyFile.file),
+                scale: previewProxyScale,
+                segmentIndex: proxyFile.segmentIndex,
+                sourceEndSeconds: proxyFile.sourceEndSeconds,
+                sourceStartSeconds: proxyFile.sourceStartSeconds,
+              })
+            }
+
+            incrementPreviewProxyAssetProgress(progressKey, Boolean(proxyFile))
+          })
+          .catch(() => {
+            if (!isPreviewStageMountedRef.current) {
+              return
+            }
+
+            incrementPreviewProxyAssetProgress(progressKey, false)
+          })
+      }
+    }
+
+    function incrementPreviewProxyAssetProgress(
+      progressKey: string,
+      didSucceed: boolean
+    ) {
+      setPreviewProxyAssetProgress((current) => {
+        const currentProgress = current[progressKey]
+
+        if (!currentProgress) {
+          return current
+        }
+
+        return {
+          ...current,
+          [progressKey]: {
+            ...currentProgress,
+            completed: Math.min(
+              currentProgress.total,
+              currentProgress.completed + 1
+            ),
+            failed: didSucceed
+              ? currentProgress.failed
+              : currentProgress.failed + 1,
+          },
+        }
+      })
+    }
+  }, [previewProxyCandidates, previewProxyScale, setPreviewProxyEntry])
 
   useEffect(() => {
     playheadRef.current = playheadSeconds
@@ -2580,7 +3123,7 @@ function PreviewStage({
       style={{ gridTemplateRows: "minmax(0, 1fr) auto" }}
     >
       <div className="grid min-h-0 place-items-center bg-card p-3">
-        <div className="[container-type:size] relative h-full min-h-0 w-full overflow-hidden bg-card">
+        <div className="[container-type:size] relative grid h-full min-h-0 w-full place-items-center overflow-hidden bg-card">
           <div
             className="relative m-auto overflow-hidden rounded-lg bg-background"
             style={{
@@ -2608,6 +3151,40 @@ function PreviewStage({
                 ) : null
               }
 
+              const clipSourceTime = getSourceTimeForTimelineItem(
+                {
+                  sourceEndSeconds: clip.sourceEndSeconds,
+                  sourceStartSeconds: clip.sourceStartSeconds,
+                  timelineStartSeconds: clip.timelineStartSeconds,
+                },
+                playheadSeconds
+              )
+              const clipProxySegmentIndex =
+                getPreviewProxySegmentIndex(clipSourceTime)
+              const proxyEntry =
+                previewProxyScale && asset
+                  ? previewProxyMap[
+                      getPreviewProxyEntryKey(
+                        asset.id,
+                        previewProxyScale,
+                        clipProxySegmentIndex
+                      )
+                    ]
+                  : null
+              const proxyFingerprint = asset
+                ? getSourceAssetPreviewFingerprint(asset)
+                : null
+              const canUseProxyEntry =
+                proxyEntry?.status === "ready" &&
+                proxyEntry.fingerprint === proxyFingerprint &&
+                isSourceTimeInPreviewProxySegment(clipSourceTime, proxyEntry)
+              const videoRuntimeAsset = canUseProxyEntry
+                ? proxyEntry.runtimeAsset
+                : runtimeAsset
+              const videoSourceOffsetSeconds = canUseProxyEntry
+                ? proxyEntry.sourceStartSeconds
+                : 0
+
               return (
                 <PreviewVideoLayer
                   key={clip.id}
@@ -2615,8 +3192,9 @@ function PreviewStage({
                   asset={asset}
                   frameWidth={project.exportSettings.width}
                   frameHeight={project.exportSettings.height}
-                  previewResolutionScale={previewRenderScale}
-                  runtimeAsset={runtimeAsset}
+                  audioRuntimeAsset={runtimeAsset}
+                  videoRuntimeAsset={videoRuntimeAsset}
+                  videoSourceOffsetSeconds={videoSourceOffsetSeconds}
                   playheadSeconds={playheadSeconds}
                   isPlaying={isPlaying}
                   isScrubbing={isScrubbing}
@@ -2696,6 +3274,9 @@ function PreviewStage({
           </span>
         </div>
         <PreviewResolutionSelect
+          hasError={hasPreviewProxyError}
+          isLoading={isPreviewProxyLoading}
+          loadingProgress={previewProxyLoadingProgress}
           value={previewResolutionScale}
           onValueChange={onPreviewResolutionScaleChange}
         />
@@ -2705,9 +3286,15 @@ function PreviewStage({
 }
 
 function PreviewResolutionSelect({
+  hasError,
+  isLoading,
+  loadingProgress,
   value,
   onValueChange,
 }: {
+  hasError: boolean
+  isLoading: boolean
+  loadingProgress: number | null
   value: PreviewResolutionScale
   onValueChange: (scale: PreviewResolutionScale) => void
 }) {
@@ -2720,18 +3307,42 @@ function PreviewResolutionSelect({
   )
   const selectedOption =
     PREVIEW_RESOLUTION_OPTIONS[selectedIndex] ?? PREVIEW_RESOLUTION_OPTIONS[1]
+  const loadingLabel =
+    typeof loadingProgress === "number" && loadingProgress > 0
+      ? `Building lower-resolution preview (${formatPreviewProxyProgress(
+          loadingProgress
+        )})`
+      : "Queued lower-resolution preview"
 
   return (
     <DropdownMenu>
       <DropdownTrigger className="flex h-8 w-40 items-center justify-between rounded-lg border-0 bg-background px-4 text-[13px] text-muted-foreground outline-none hover:text-foreground">
         <span className="truncate">{selectedOption.label}</span>
-        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        {isLoading ? (
+          <Tooltip content={loadingLabel} side="top">
+            <span className="grid size-3.5 shrink-0 place-items-center text-muted-foreground">
+              <Loader className="size-3.5 animate-spin" />
+            </span>
+          </Tooltip>
+        ) : hasError ? (
+          <Tooltip
+            content="Lower-resolution preview failed. Using original media."
+            side="top"
+          >
+            <span className="grid size-3.5 shrink-0 place-items-center text-destructive">
+              <CircleExclamation className="size-3.5" />
+            </span>
+          </Tooltip>
+        ) : (
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
       </DropdownTrigger>
       <DropdownContent
         align="end"
         checkedIndex={selectedIndex}
         className="z-[5010] w-44"
       >
+        <DropdownLabel>Playback quality</DropdownLabel>
         {PREVIEW_RESOLUTION_OPTIONS.map((option, index) => (
           <MenuItem
             key={option.value}
@@ -2754,13 +3365,138 @@ function clampPreviewResolutionScale(
     : DEFAULT_PREVIEW_RESOLUTION_SCALE
 }
 
+function getPreviewProxyScale(
+  scale: PreviewResolutionScale
+): PreviewProxyScale | null {
+  return scale === 0.5 ? scale : null
+}
+
+function getPreviewProxyBackgroundProgress(
+  candidates: Array<{
+    asset: SourceAsset
+    runtimeAsset: RuntimeAsset
+    segmentIndex: number
+    sourceTimeSeconds: number
+  }>,
+  proxyMap: PreviewProxyMap,
+  progressMap: PreviewProxyAssetProgressMap,
+  scale: PreviewProxyScale
+) {
+  const seenKeys = new Set<string>()
+  let completed = 0
+  let total = 0
+
+  for (const { asset } of candidates) {
+    const key = getPreviewProxyAssetProgressKey(asset, scale)
+
+    if (seenKeys.has(key)) {
+      continue
+    }
+
+    seenKeys.add(key)
+
+    const fingerprint = getSourceAssetPreviewFingerprint(asset)
+    const progress = progressMap[key]
+    const assetEntries = Object.values(proxyMap).filter(
+      (entry) =>
+        entry.assetId === asset.id &&
+        entry.fingerprint === fingerprint &&
+        entry.scale === scale
+    )
+    const readySegments = assetEntries.filter(
+      (entry) => entry.status === "ready"
+    ).length
+    const loadingProgress = Math.max(
+      0,
+      ...assetEntries
+        .filter(
+          (entry): entry is Extract<PreviewProxyEntry, { status: "loading" }> =>
+            entry.status === "loading"
+        )
+        .map((entry) => entry.progress)
+    )
+
+    const assetTotal = progress?.total ?? getPreviewProxySegmentCount(asset)
+    const assetCompleted = Math.max(
+      readySegments,
+      progress ? Math.min(progress.completed, progress.total) : 0
+    )
+
+    completed += Math.min(assetTotal, assetCompleted + loadingProgress)
+    total += assetTotal
+  }
+
+  if (total === 0) {
+    return null
+  }
+
+  return {
+    completed,
+    progress: completed / total,
+    total,
+  }
+}
+
+function getPreviewProxyEntryKey(
+  assetId: string,
+  scale: PreviewProxyScale,
+  segmentIndex: number
+) {
+  return `${assetId}:${scale}:${segmentIndex}`
+}
+
+function getPreviewProxyAssetProgressKey(
+  asset: SourceAsset,
+  scale: PreviewProxyScale
+) {
+  return `${asset.id}:${scale}:${getSourceAssetPreviewFingerprint(asset)}`
+}
+
+function getPreviewProxyBackgroundSegmentOrder(
+  segmentCount: number,
+  startSegmentIndex: number
+) {
+  const clampedStartSegmentIndex = clamp(
+    startSegmentIndex,
+    0,
+    Math.max(0, segmentCount - 1)
+  )
+  const order = [clampedStartSegmentIndex]
+
+  for (let distance = 1; order.length < segmentCount; distance++) {
+    const next = clampedStartSegmentIndex + distance
+    const previous = clampedStartSegmentIndex - distance
+
+    if (next < segmentCount) {
+      order.push(next)
+    }
+
+    if (previous >= 0) {
+      order.push(previous)
+    }
+  }
+
+  return order
+}
+
+function formatPreviewProxyProgress(progress: number) {
+  const percent = Math.max(0, Math.min(100, progress * 100))
+
+  if (percent > 0 && percent < 10) {
+    return `${percent.toFixed(1)}%`
+  }
+
+  return `${Math.round(percent)}%`
+}
+
 function PreviewVideoLayer({
   clip,
   asset,
   frameWidth,
   frameHeight,
-  previewResolutionScale,
-  runtimeAsset,
+  audioRuntimeAsset,
+  videoRuntimeAsset,
+  videoSourceOffsetSeconds,
   playheadSeconds,
   isPlaying,
   isScrubbing,
@@ -2773,8 +3509,9 @@ function PreviewVideoLayer({
   asset?: SourceAsset
   frameWidth: number
   frameHeight: number
-  previewResolutionScale: PreviewResolutionScale
-  runtimeAsset: RuntimeAsset
+  audioRuntimeAsset: RuntimeAsset
+  videoRuntimeAsset: RuntimeAsset
+  videoSourceOffsetSeconds: number
   playheadSeconds: number
   isPlaying: boolean
   isScrubbing: boolean
@@ -2804,7 +3541,6 @@ function PreviewVideoLayer({
     layerGeometry,
     getPreviewLayerZIndex(clip)
   )
-  const previewRenderScale = clampPreviewResolutionScale(previewResolutionScale)
 
   useEffect(
     () => () => {
@@ -2859,16 +3595,16 @@ function PreviewVideoLayer({
       return
     }
 
-    const sourceChanged = activeObjectUrlRef.current !== runtimeAsset.objectUrl
+    const sourceChanged =
+      activeObjectUrlRef.current !== videoRuntimeAsset.objectUrl
     const clipTiming = {
       sourceStartSeconds: clip.sourceStartSeconds,
       sourceEndSeconds: clip.sourceEndSeconds,
       timelineStartSeconds: clip.timelineStartSeconds,
     }
-    const targetTime = getSourceTimeForTimelineItem(
-      clipTiming,
-      playheadSeconds
-    )
+    const targetTime =
+      getSourceTimeForTimelineItem(clipTiming, playheadSeconds) -
+      videoSourceOffsetSeconds
     const shouldPlay = isPlaying && isActive && !isScrubbing
     const shouldSeek =
       sourceChanged ||
@@ -2890,8 +3626,8 @@ function PreviewVideoLayer({
       }
 
       if (sourceChanged) {
-        player.src = runtimeAsset.objectUrl
-        activeObjectUrlRef.current = runtimeAsset.objectUrl
+        player.src = videoRuntimeAsset.objectUrl
+        activeObjectUrlRef.current = videoRuntimeAsset.objectUrl
         player.muted = true
         await waitForMediaMetadata(player)
       }
@@ -2942,7 +3678,8 @@ function PreviewVideoLayer({
     isScrubbing,
     onIssue,
     playheadSeconds,
-    runtimeAsset.objectUrl,
+    videoSourceOffsetSeconds,
+    videoRuntimeAsset.objectUrl,
   ])
 
   useEffect(() => {
@@ -2958,7 +3695,7 @@ function PreviewVideoLayer({
     }
 
     const sourceChanged =
-      activeAudioObjectUrlRef.current !== runtimeAsset.objectUrl
+      activeAudioObjectUrlRef.current !== audioRuntimeAsset.objectUrl
     const clipTiming = {
       sourceStartSeconds: clip.sourceStartSeconds,
       sourceEndSeconds: clip.sourceEndSeconds,
@@ -2989,8 +3726,8 @@ function PreviewVideoLayer({
       }
 
       if (sourceChanged) {
-        player.src = runtimeAsset.objectUrl
-        activeAudioObjectUrlRef.current = runtimeAsset.objectUrl
+        player.src = audioRuntimeAsset.objectUrl
+        activeAudioObjectUrlRef.current = audioRuntimeAsset.objectUrl
         await waitForMediaMetadata(player)
         applyClipAudioVolume()
       }
@@ -3033,7 +3770,7 @@ function PreviewVideoLayer({
     isScrubbing,
     applyClipAudioVolume,
     playheadSeconds,
-    runtimeAsset.objectUrl,
+    audioRuntimeAsset.objectUrl,
   ])
 
   return (
@@ -3045,35 +3782,25 @@ function PreviewVideoLayer({
         ].join(" ")}
         style={layerStyle}
       >
-        <div
-          className="absolute top-0 left-0"
-          style={{
-            height: `${previewRenderScale * 100}%`,
-            transform: `scale(${1 / previewRenderScale})`,
-            transformOrigin: "top left",
-            width: `${previewRenderScale * 100}%`,
-          }}
-        >
-          <video
-            ref={videoRef}
-            className="block size-full bg-card object-contain"
-            muted
-            playsInline
-            preload="auto"
-            onError={() =>
-              onIssue(
-                "This browser could not decode one of the active video files."
-              )
+        <video
+          ref={videoRef}
+          className="block size-full bg-card object-contain"
+          muted
+          playsInline
+          preload="auto"
+          onError={() =>
+            onIssue(
+              "This browser could not decode one of the active video files."
+            )
+          }
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget
+            video.muted = true
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              onIssue(null)
             }
-            onLoadedMetadata={(event) => {
-              const video = event.currentTarget
-              video.muted = true
-              if (video.videoWidth > 0 && video.videoHeight > 0) {
-                onIssue(null)
-              }
-            }}
-          />
-        </div>
+          }}
+        />
       </div>
       <audio ref={audioRef} preload="auto" />
     </>

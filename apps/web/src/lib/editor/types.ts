@@ -11,6 +11,7 @@ export type SourceAsset = {
   width?: number
   height?: number
   createdAt: number
+  fingerprint?: string
   fileHandle?: FileSystemFileHandle
   fileBlob?: File
 }

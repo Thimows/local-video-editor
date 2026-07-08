@@ -8,11 +8,35 @@ type OpenFilePickerOptions = {
   types?: FilePickerAcceptType[]
 }
 
+type LocalVideoEditorProxyDebugEntry = {
+  assetId: string
+  assetName: string
+  cacheKey?: string
+  durationSeconds?: number
+  elapsedMs?: number
+  errorMessage?: string
+  errorName?: string
+  outputSizeBytes?: number
+  phase: string
+  progress?: number
+  processedTimeSeconds?: number
+  scale: 0.5
+  segmentIndex?: number
+  sourceEndSeconds?: number
+  sourceSizeBytes: number
+  sourceStartSeconds?: number
+  timestamp: string
+}
+
 interface Window {
   showOpenFilePicker?: (
     options?: OpenFilePickerOptions
   ) => Promise<FileSystemFileHandle[]>
   __LOCAL_VIDEO_EDITOR_FILE_DEBUG__?: unknown
+  __LOCAL_VIDEO_EDITOR_PROXY_DEBUG__?: {
+    active: Record<string, LocalVideoEditorProxyDebugEntry>
+    history: LocalVideoEditorProxyDebugEntry[]
+  }
 }
 
 interface FileSystemFileHandle {
