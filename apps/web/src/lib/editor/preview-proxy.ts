@@ -4,10 +4,10 @@ import {
   Conversion,
   ConversionCanceledError,
   Input,
+  Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
   StreamTarget,
-  WebMOutputFormat,
   type StreamTargetChunk,
 } from "mediabunny"
 
@@ -23,11 +23,12 @@ export type PreviewProxyFile = {
 }
 
 const PREVIEW_PROXY_DIRECTORY = "preview-proxies"
-const PREVIEW_PROXY_VERSION = "v5-segmented-webm-video-only-high"
+const PREVIEW_PROXY_VERSION = "v6-segmented-mp4-avc-video-only-high-30fps"
 const PREVIEW_PROXY_SEGMENT_DURATION_SECONDS = 30
 const PREVIEW_PROXY_CHUNK_SIZE = 8 * 1024 * 1024
-const PREVIEW_PROXY_EXTENSION = "webm"
-const PREVIEW_PROXY_MIME_TYPE = "video/webm"
+const PREVIEW_PROXY_EXTENSION = "mp4"
+const PREVIEW_PROXY_MIME_TYPE = "video/mp4"
+const PREVIEW_PROXY_FRAME_RATE = 30
 
 type PreviewProxyProgressListener = (
   progress: number,
@@ -353,7 +354,10 @@ async function createPreviewProxySegment({
     formats: ALL_FORMATS,
   })
   const output = new Output({
-    format: new WebMOutputFormat(),
+    format: new Mp4OutputFormat({
+      fastStart: "fragmented",
+      minimumFragmentDuration: 1,
+    }),
     target: new StreamTarget(writable as WritableStream<StreamTargetChunk>, {
       chunkSize: PREVIEW_PROXY_CHUNK_SIZE,
       chunked: true,
@@ -386,8 +390,11 @@ async function createPreviewProxySegment({
       video: {
         ...dimensions,
         bitrate: QUALITY_HIGH,
+        codec: "avc",
         fit: "contain",
         forceTranscode: true,
+        frameRate: PREVIEW_PROXY_FRAME_RATE,
+        hardwareAcceleration: "prefer-hardware",
         keyFrameInterval: 1,
       },
     })
