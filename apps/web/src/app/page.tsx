@@ -281,15 +281,42 @@ export default function Page() {
 
             <footer className="mx-auto flex w-full max-w-4xl flex-col-reverse items-center justify-between gap-3 pt-8 pb-2 text-sm text-muted-foreground sm:flex-row">
               <p>&copy; 2026</p>
-              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+              <div className="flex flex-wrap items-center justify-center gap-x-1.5 gap-y-2">
+                <span>Built by</span>
                 <a
                   href="https://x.com/thmawa"
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 hover:text-foreground"
+                  className="inline-flex items-center gap-1 hover:text-foreground"
                 >
                   <BrandX className="size-3.5" />
-                  <span>Built by @thmawa in</span>
+                  <span>@thmawa</span>
+                </a>
+                <span>from</span>
+                <a
+                  href="https://stepform.ai/?ref=local-video-editor&utm_source=localvideoeditor.com&utm_medium=footer&utm_campaign=local_video_editor"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 hover:text-foreground"
+                >
+                  <Image
+                    src="/landing/brands/stepform-icon-black.svg"
+                    alt=""
+                    width={14}
+                    height={14}
+                    className="size-3 dark:hidden"
+                  />
+                  <Image
+                    src="/landing/brands/stepform-icon-white.svg"
+                    alt=""
+                    width={14}
+                    height={14}
+                    className="hidden size-3 dark:block"
+                  />
+                  <span>Stepform</span>
+                </a>
+                <span>in</span>
+                <span className="inline-flex items-center gap-1.5">
                   <Image
                     src="/landing/eu-flag-circular.svg"
                     alt="EU flag"
@@ -297,7 +324,7 @@ export default function Page() {
                     height={16}
                   />
                   <span>Europe</span>
-                </a>
+                </span>
               </div>
             </footer>
           </div>
