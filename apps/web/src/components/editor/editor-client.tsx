@@ -2055,8 +2055,8 @@ function ExportDialog({
   const [open, setOpen] = useState(false)
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false)
   const formatOptions: Array<{ label: string; value: ExportFormat }> = [
-    { label: "WebM", value: "webm" },
     { label: "MP4", value: "mp4" },
+    { label: "WebM", value: "webm" },
   ]
   const selectedFormatIndex = Math.max(
     0,

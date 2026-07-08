@@ -100,6 +100,7 @@ export async function exportProjectToVideo({
   const videoSource = new CanvasSource(canvas, {
     codec: config.videoCodec,
     bitrate: exportBitrates.videoBitsPerSecond,
+    hardwareAcceleration: "prefer-hardware",
     keyFrameInterval: 2,
   })
   const audioSource = hasAudioTrack

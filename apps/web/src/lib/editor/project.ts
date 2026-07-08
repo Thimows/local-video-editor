@@ -2,11 +2,11 @@ import type { ExportSettings, Project } from "./types"
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   compression: "balanced",
-  format: "webm",
+  format: "mp4",
   width: 1920,
   height: 1080,
   fps: 30,
-  videoBitsPerSecond: 3_750_000,
+  videoBitsPerSecond: 5_000_000,
   audioBitsPerSecond: 160_000,
 }
 
