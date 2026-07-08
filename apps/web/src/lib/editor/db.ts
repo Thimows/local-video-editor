@@ -1,8 +1,9 @@
-import type { Project, ProjectSummary } from "./types"
+import type { Project, ProjectSummary, ProjectUndoHistoryRecord } from "./types"
 
 const DB_NAME = "local-video-editor"
-const DB_VERSION = 1
+const DB_VERSION = 2
 const PROJECT_STORE = "projects"
+const PROJECT_UNDO_HISTORY_STORE = "projectUndoHistory"
 const MAX_PERSISTED_FILE_BLOB_BYTES = 1024 * 1024 * 1024
 
 function ensureBrowser() {
@@ -23,6 +24,12 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(PROJECT_STORE)) {
         db.createObjectStore(PROJECT_STORE, { keyPath: "id" })
       }
+
+      if (!db.objectStoreNames.contains(PROJECT_UNDO_HISTORY_STORE)) {
+        db.createObjectStore(PROJECT_UNDO_HISTORY_STORE, {
+          keyPath: "projectId",
+        })
+      }
     }
 
     request.onsuccess = () => resolve(request.result)
@@ -34,11 +41,19 @@ async function withStore<T>(
   mode: IDBTransactionMode,
   callback: (store: IDBObjectStore) => IDBRequest<T> | void
 ): Promise<T | undefined> {
+  return withNamedStore(PROJECT_STORE, mode, callback)
+}
+
+async function withNamedStore<T>(
+  storeName: string,
+  mode: IDBTransactionMode,
+  callback: (store: IDBObjectStore) => IDBRequest<T> | void
+): Promise<T | undefined> {
   const db = await openDatabase()
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(PROJECT_STORE, mode)
-    const store = transaction.objectStore(PROJECT_STORE)
+    const transaction = db.transaction(storeName, mode)
+    const store = transaction.objectStore(storeName)
     const request = callback(store)
     let result: T | undefined
 
@@ -92,6 +107,35 @@ export async function saveProject(project: Project) {
 
 export async function deleteProject(id: string) {
   await withStore("readwrite", (store) => store.delete(id))
+  await deleteProjectUndoHistory(id)
+}
+
+export async function getProjectUndoHistory(projectId: string) {
+  const history =
+    ((await withNamedStore(
+      PROJECT_UNDO_HISTORY_STORE,
+      "readonly",
+      (store) => store.get(projectId)
+    )) as ProjectUndoHistoryRecord | undefined) ?? null
+
+  return history
+}
+
+export async function saveProjectUndoHistory(
+  history: ProjectUndoHistoryRecord
+) {
+  await withNamedStore(PROJECT_UNDO_HISTORY_STORE, "readwrite", (store) =>
+    store.put({
+      ...history,
+      updatedAt: Date.now(),
+    })
+  )
+}
+
+export async function deleteProjectUndoHistory(projectId: string) {
+  await withNamedStore(PROJECT_UNDO_HISTORY_STORE, "readwrite", (store) =>
+    store.delete(projectId)
+  )
 }
 
 function normalizeProjectForStorage(project: Project): Project {

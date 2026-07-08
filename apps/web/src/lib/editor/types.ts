@@ -62,6 +62,27 @@ export type Project = {
   exportSettings: ExportSettings
 }
 
+export type ProjectUndoSnapshot = {
+  clips: TimelineClip[]
+  exportSettings: ExportSettings
+  musicTracks: MusicTrack[]
+  selection: Selection
+}
+
+export type ProjectUndoHistoryEntry = {
+  action: string
+  committedAt: number
+  mergeKey?: string
+  snapshot: ProjectUndoSnapshot
+}
+
+export type ProjectUndoHistoryRecord = {
+  projectId: string
+  redoHistory: ProjectUndoHistoryEntry[]
+  undoHistory: ProjectUndoHistoryEntry[]
+  updatedAt: number
+}
+
 export type RuntimeAsset = {
   file: File
   objectUrl: string

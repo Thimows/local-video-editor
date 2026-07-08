@@ -4,6 +4,8 @@ import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
+  IconArrowBackUp as Undo,
+  IconArrowForwardUp as Redo,
   IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
@@ -91,10 +93,18 @@ import {
   type TimelineWaveform,
   type TimelineWaveformMap,
 } from "@/lib/editor/waveform"
-import { getProject, saveProject } from "@/lib/editor/db"
+import {
+  getProject,
+  getProjectUndoHistory,
+  saveProject,
+  saveProjectUndoHistory,
+} from "@/lib/editor/db"
 import type {
   MusicTrack,
   Project,
+  ProjectUndoHistoryEntry,
+  ProjectUndoHistoryRecord,
+  ProjectUndoSnapshot,
   RuntimeAsset,
   RuntimeAssetMap,
   Selection,
@@ -215,6 +225,8 @@ const DEFAULT_TIMELINE_PANEL_HEIGHT = 40 + TIMELINE_VIEWPORT_HEIGHT
 const MIN_TIMELINE_PANEL_HEIGHT = 160
 const MAX_TIMELINE_PANEL_HEIGHT = 420
 const RESIZE_GAP_SIZE = 12
+const UNDO_HISTORY_LIMIT = 100
+const UNDO_COALESCE_MS = 200
 
 const ASPECT_RATIO_OPTIONS = [
   {
@@ -341,6 +353,18 @@ type LocalFileDebugRestore = {
   diagnostics: FileRestoreDiagnostic[]
 }
 
+type UndoSnapshot = ProjectUndoSnapshot
+type UndoHistoryEntry = ProjectUndoHistoryEntry
+type UndoHistoryAvailability = {
+  canRedo: boolean
+  canUndo: boolean
+}
+
+type CommitProjectChangeOptions = {
+  mergeKey?: string
+  nextSelection?: Selection
+}
+
 function applyTimelineItemPreviewPatch(
   project: Project | null,
   preview: TimelineItemPreviewPatch | null
@@ -399,6 +423,8 @@ export function EditorClient() {
   const [project, setProject] = useState<Project | null>(null)
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetMap>({})
   const [selection, setSelection] = useState<Selection>({ type: "project" })
+  const [historyAvailability, setHistoryAvailability] =
+    useState<UndoHistoryAvailability>({ canRedo: false, canUndo: false })
   const [inspectorView, setInspectorView] = useState<InspectorView>("project")
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
   const [timelineZoom, setTimelineZoom] = useState(4)
@@ -454,6 +480,10 @@ export function EditorClient() {
   const timelineScrubSettleTimeoutRef = useRef<number | null>(null)
   const cleanedPreviewProxyAssetIdsRef = useRef<Set<string>>(new Set())
   const timelineFocusRequestIdRef = useRef(0)
+  const undoHistoryQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const activeProjectIdRef = useRef<string | null>(null)
+
+  activeProjectIdRef.current = project?.id ?? null
 
   const selectEditorSelection = useCallback((nextSelection: Selection) => {
     setSelection(nextSelection)
@@ -480,6 +510,200 @@ export function EditorClient() {
     [selectEditorSelection]
   )
 
+  const setStoredHistoryAvailability = useCallback(
+    (targetProjectId: string, history: ProjectUndoHistoryRecord) => {
+      if (activeProjectIdRef.current !== targetProjectId) {
+        return
+      }
+
+      setHistoryAvailability(getUndoHistoryAvailability(history))
+    },
+    []
+  )
+
+  const updateStoredUndoHistory = useCallback(
+    (
+      targetProjectId: string,
+      updater: (
+        history: ProjectUndoHistoryRecord
+      ) => ProjectUndoHistoryRecord
+    ) => {
+      const run = undoHistoryQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const current =
+            (await getProjectUndoHistory(targetProjectId)) ??
+            createEmptyProjectUndoHistoryRecord(targetProjectId)
+          const next = normalizeProjectUndoHistoryRecord(updater(current))
+
+          await saveProjectUndoHistory(next)
+          setStoredHistoryAvailability(targetProjectId, next)
+        })
+
+      undoHistoryQueueRef.current = run.catch(() => undefined)
+
+      return run
+    },
+    [setStoredHistoryAvailability]
+  )
+
+  const commitProjectChange = useCallback(
+    (
+      nextProject: Project,
+      action: string,
+      options: CommitProjectChangeOptions = {}
+    ) => {
+      if (!project) {
+        setProject(nextProject)
+        return
+      }
+
+      const nextSelection = options.nextSelection ?? selection
+      const before = createUndoSnapshot(project, selection)
+      const after = createUndoSnapshot(nextProject, nextSelection)
+
+      // All user-facing timeline edits should go through this helper so new
+      // features automatically participate in undo/redo and can label toasts.
+      if (!areUndoSnapshotsEqual(before, after)) {
+        const historyEntry: UndoHistoryEntry = {
+          action,
+          committedAt: Date.now(),
+          mergeKey: options.mergeKey,
+          snapshot: before,
+        }
+
+        void updateStoredUndoHistory(project.id, (history) => ({
+          ...history,
+          redoHistory: [],
+          undoHistory: appendUndoHistoryEntry(
+            history.undoHistory,
+            historyEntry
+          ),
+        })).catch(() => undefined)
+      }
+
+      setProject(nextProject)
+
+      if (options.nextSelection) {
+        selectEditorSelection(options.nextSelection)
+      }
+    },
+    [project, selectEditorSelection, selection, updateStoredUndoHistory]
+  )
+
+  const restoreUndoSnapshot = useCallback(
+    (snapshot: UndoSnapshot) => {
+      if (!project) {
+        return
+      }
+
+      const nextProject = applyUndoSnapshot(project, snapshot)
+
+      setTimelineItemPreview(null)
+      setProject(nextProject)
+      selectEditorSelection(getRestorableUndoSelection(snapshot, nextProject))
+    },
+    [project, selectEditorSelection]
+  )
+
+  const undoLastChange = useCallback(() => {
+    if (!project || !historyAvailability.canUndo) {
+      return
+    }
+
+    const targetProjectId = project.id
+    const currentSnapshot = createUndoSnapshot(project, selection)
+
+    void (async () => {
+      const restoreEntryRef: { current: UndoHistoryEntry | null } = {
+        current: null,
+      }
+
+      await updateStoredUndoHistory(targetProjectId, (history) => {
+        const entry = history.undoHistory[history.undoHistory.length - 1]
+
+        if (!entry) {
+          return history
+        }
+
+        restoreEntryRef.current = entry
+
+        return {
+          ...history,
+          redoHistory: appendBoundedHistoryEntry(history.redoHistory, {
+            action: entry.action,
+            committedAt: Date.now(),
+            mergeKey: entry.mergeKey,
+            snapshot: currentSnapshot,
+          }),
+          undoHistory: history.undoHistory.slice(0, -1),
+        }
+      })
+
+      const restoredEntry = restoreEntryRef.current
+
+      if (restoredEntry && activeProjectIdRef.current === targetProjectId) {
+        restoreUndoSnapshot(restoredEntry.snapshot)
+        showUndoRedoToast("undo", restoredEntry.action)
+      }
+    })().catch(() => undefined)
+  }, [
+    historyAvailability.canUndo,
+    project,
+    restoreUndoSnapshot,
+    selection,
+    updateStoredUndoHistory,
+  ])
+
+  const redoLastChange = useCallback(() => {
+    if (!project || !historyAvailability.canRedo) {
+      return
+    }
+
+    const targetProjectId = project.id
+    const currentSnapshot = createUndoSnapshot(project, selection)
+
+    void (async () => {
+      const restoreEntryRef: { current: UndoHistoryEntry | null } = {
+        current: null,
+      }
+
+      await updateStoredUndoHistory(targetProjectId, (history) => {
+        const entry = history.redoHistory[history.redoHistory.length - 1]
+
+        if (!entry) {
+          return history
+        }
+
+        restoreEntryRef.current = entry
+
+        return {
+          ...history,
+          redoHistory: history.redoHistory.slice(0, -1),
+          undoHistory: appendBoundedHistoryEntry(history.undoHistory, {
+            action: entry.action,
+            committedAt: Date.now(),
+            mergeKey: entry.mergeKey,
+            snapshot: currentSnapshot,
+          }),
+        }
+      })
+
+      const restoredEntry = restoreEntryRef.current
+
+      if (restoredEntry && activeProjectIdRef.current === targetProjectId) {
+        restoreUndoSnapshot(restoredEntry.snapshot)
+        showUndoRedoToast("redo", restoredEntry.action)
+      }
+    })().catch(() => undefined)
+  }, [
+    historyAvailability.canRedo,
+    project,
+    restoreUndoSnapshot,
+    selection,
+    updateStoredUndoHistory,
+  ])
+
   const deleteSelectedTimelineItem = useCallback(() => {
     if (!project) {
       return
@@ -490,14 +714,15 @@ export function EditorClient() {
         return
       }
 
-      setProject(
+      commitProjectChange(
         compactProjectTimelineTracks({
           ...project,
           clips: project.clips.filter((clip) => clip.id !== selection.id),
           updatedAt: Date.now(),
-        })
+        }),
+        "delete clip",
+        { nextSelection: { type: "project" } }
       )
-      selectEditorSelection({ type: "project" })
       return
     }
 
@@ -506,18 +731,19 @@ export function EditorClient() {
         return
       }
 
-      setProject(
+      commitProjectChange(
         compactProjectTimelineTracks({
           ...project,
           musicTracks: project.musicTracks.filter(
             (track) => track.id !== selection.id
           ),
           updatedAt: Date.now(),
-        })
+        }),
+        "delete audio",
+        { nextSelection: { type: "project" } }
       )
-      selectEditorSelection({ type: "project" })
     }
-  }, [project, selectEditorSelection, selection])
+  }, [commitProjectChange, project, selection])
 
   const handleTimelineSeekingChange = useCallback((isSeeking: boolean) => {
     if (timelineScrubSettleTimeoutRef.current !== null) {
@@ -543,6 +769,31 @@ export function EditorClient() {
     function onKeyDown(event: KeyboardEvent) {
       const isArrowKey = event.key === "ArrowLeft" || event.key === "ArrowRight"
       const isEscapeKey = event.key === "Escape"
+      const key = event.key.toLowerCase()
+      const isUndoShortcut =
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        key === "z" &&
+        !event.shiftKey
+      const isRedoShortcut =
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        ((key === "z" && event.shiftKey) || key === "y")
+
+      if (
+        (isUndoShortcut || isRedoShortcut) &&
+        !isTextEditingTarget(event.target)
+      ) {
+        event.preventDefault()
+
+        if (isRedoShortcut) {
+          redoLastChange()
+        } else {
+          undoLastChange()
+        }
+
+        return
+      }
 
       if (
         (event.repeat && !isArrowKey) ||
@@ -594,7 +845,14 @@ export function EditorClient() {
     window.addEventListener("keydown", onKeyDown)
 
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [deleteSelectedTimelineItem, project, selectEditorSelection, selection.type])
+  }, [
+    deleteSelectedTimelineItem,
+    project,
+    redoLastChange,
+    selectEditorSelection,
+    selection.type,
+    undoLastChange,
+  ])
 
   useEffect(
     () => () => {
@@ -745,8 +1003,20 @@ export function EditorClient() {
       }
 
       publishLocalFileDebug("restore-complete", targetProject, result)
+      const persistedHistory = await getProjectUndoHistory(targetProject.id).catch(
+        () => null
+      )
+      const normalizedHistory = normalizeProjectUndoHistoryRecord(
+        persistedHistory ??
+          createEmptyProjectUndoHistoryRecord(targetProject.id)
+      )
 
+      setHistoryAvailability(getUndoHistoryAvailability(normalizedHistory))
       setProject(targetProject)
+
+      if (persistedHistory) {
+        saveProjectUndoHistory(normalizedHistory).catch(() => undefined)
+      }
 
       if (result.restoredCount > 0) {
         setRuntimeAssets(result.runtimeAssets)
@@ -1062,7 +1332,9 @@ export function EditorClient() {
     setRuntimeAssets((current) =>
       mergeRuntimeAssets(current, nextRuntimeAssets)
     )
-    setProject(nextProject)
+    commitProjectChange(nextProject, "import media", {
+      nextSelection: firstImportedSelection ?? selection,
+    })
     if (firstImportedSelection) {
       focusTimelineSelection(firstImportedSelection)
     }
@@ -1176,7 +1448,9 @@ export function EditorClient() {
         updatedAt: Date.now(),
       }
 
-      setProject(nextProject)
+      commitProjectChange(nextProject, "add clip to timeline", {
+        nextSelection: { type: "clip", id: clipId },
+      })
       focusTimelineSelection({ type: "clip", id: clipId })
       await saveProject(nextProject)
       return
@@ -1201,7 +1475,9 @@ export function EditorClient() {
       updatedAt: Date.now(),
     }
 
-    setProject(nextProject)
+    commitProjectChange(nextProject, "add audio to timeline", {
+      nextSelection: { type: "music", id: trackId },
+    })
     focusTimelineSelection({ type: "music", id: trackId })
     await saveProject(nextProject)
   }
@@ -1371,10 +1647,14 @@ export function EditorClient() {
       updatedAt: Date.now(),
     }
 
-    setProject(
+    commitProjectChange(
       shouldCompactTracks
         ? compactProjectTimelineTracks(nextProject)
-        : nextProject
+        : nextProject,
+      getClipPatchUndoAction(patch),
+      {
+        mergeKey: getClipPatchUndoMergeKey(id, patch),
+      }
     )
   }
 
@@ -1425,10 +1705,14 @@ export function EditorClient() {
       updatedAt: Date.now(),
     }
 
-    setProject(
+    commitProjectChange(
       shouldCompactTracks
         ? compactProjectTimelineTracks(nextProject)
-        : nextProject
+        : nextProject,
+      getMusicPatchUndoAction(patch),
+      {
+        mergeKey: getMusicPatchUndoMergeKey(id, patch),
+      }
     )
   }
 
@@ -1452,16 +1736,19 @@ export function EditorClient() {
       timelineStartSeconds: playheadSeconds,
     }
 
-    setProject({
-      ...project,
-      clips: project.clips.flatMap((clip) =>
-        clip.id === selectedClip.id
-          ? [{ ...clip, sourceEndSeconds: splitSourceTime }, nextClip]
-          : [clip]
-      ),
-      updatedAt: Date.now(),
-    })
-    selectEditorSelection({ type: "clip", id: nextClip.id })
+    commitProjectChange(
+      {
+        ...project,
+        clips: project.clips.flatMap((clip) =>
+          clip.id === selectedClip.id
+            ? [{ ...clip, sourceEndSeconds: splitSourceTime }, nextClip]
+            : [clip]
+        ),
+        updatedAt: Date.now(),
+      },
+      "split clip",
+      { nextSelection: { type: "clip", id: nextClip.id } }
+    )
   }
 
   async function reconnectAsset(
@@ -1683,18 +1970,24 @@ export function EditorClient() {
             onExport={runExport}
             onCancelExport={() => exportState.controller?.abort()}
             onFormatChange={(format) =>
-              setProject({
-                ...project,
-                exportSettings: { ...project.exportSettings, format },
-                updatedAt: Date.now(),
-              })
+              commitProjectChange(
+                {
+                  ...project,
+                  exportSettings: { ...project.exportSettings, format },
+                  updatedAt: Date.now(),
+                },
+                "export format change"
+              )
             }
             onCompressionChange={(compression) =>
-              setProject({
-                ...project,
-                exportSettings: { ...project.exportSettings, compression },
-                updatedAt: Date.now(),
-              })
+              commitProjectChange(
+                {
+                  ...project,
+                  exportSettings: { ...project.exportSettings, compression },
+                  updatedAt: Date.now(),
+                },
+                "export compression change"
+              )
             }
           />
         </div>
@@ -1727,11 +2020,14 @@ export function EditorClient() {
             onClipChange={updateClip}
             onMusicChange={updateMusic}
             onProjectChange={(patch) =>
-              setProject({
-                ...project,
-                exportSettings: { ...project.exportSettings, ...patch },
-                updatedAt: Date.now(),
-              })
+              commitProjectChange(
+                {
+                  ...project,
+                  exportSettings: { ...project.exportSettings, ...patch },
+                  updatedAt: Date.now(),
+                },
+                getProjectSettingsPatchUndoAction(patch)
+              )
             }
             onReconnect={reconnectAsset}
             onSourceAssetDragStart={setDraggedSourceAssetId}
@@ -1795,6 +2091,10 @@ export function EditorClient() {
           canSplit={Boolean(selectedClip)}
           onDelete={deleteSelectedTimelineItem}
           canDelete={selection.type === "clip" || selection.type === "music"}
+          onUndo={undoLastChange}
+          canUndo={historyAvailability.canUndo}
+          onRedo={redoLastChange}
+          canRedo={historyAvailability.canRedo}
           snapEnabled={snapEnabled}
           draggedSourceAsset={draggedSourceAsset}
           onSnapEnabledChange={setSnapEnabled}
@@ -4567,6 +4867,10 @@ function Timeline({
   canSplit,
   onDelete,
   canDelete,
+  onUndo,
+  canUndo,
+  onRedo,
+  canRedo,
   snapEnabled,
   draggedSourceAsset,
   onSnapEnabledChange,
@@ -4600,6 +4904,10 @@ function Timeline({
   canSplit: boolean
   onDelete: () => void
   canDelete: boolean
+  onUndo: () => void
+  canUndo: boolean
+  onRedo: () => void
+  canRedo: boolean
   snapEnabled: boolean
   draggedSourceAsset: SourceAsset | null
   onSnapEnabledChange: (enabled: boolean) => void
@@ -5383,6 +5691,45 @@ function Timeline({
                 onClick={() => onSnapEnabledChange(!snapEnabled)}
               >
                 {snapEnabled ? <Magnet /> : <MagnetOff />}
+              </Button>
+            </span>
+          </Tooltip>
+          <div className="h-5 w-px bg-border" aria-hidden="true" />
+          <Tooltip content={canUndo ? "Undo last change" : "Nothing to undo"}>
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant={canUndo ? "outline" : "ghost"}
+                size="icon-sm"
+                aria-label="Undo last change"
+                onClick={onUndo}
+                disabled={!canUndo}
+                className={
+                  canUndo
+                    ? undefined
+                    : "bg-transparent disabled:bg-transparent disabled:opacity-35"
+                }
+              >
+                <Undo />
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip content={canRedo ? "Redo last change" : "Nothing to redo"}>
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant={canRedo ? "outline" : "ghost"}
+                size="icon-sm"
+                aria-label="Redo last change"
+                onClick={onRedo}
+                disabled={!canRedo}
+                className={
+                  canRedo
+                    ? undefined
+                    : "bg-transparent disabled:bg-transparent disabled:opacity-35"
+                }
+              >
+                <Redo />
               </Button>
             </span>
           </Tooltip>
@@ -7328,6 +7675,245 @@ function saveEditorLayout(layout: {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function createEmptyProjectUndoHistoryRecord(
+  projectId: string
+): ProjectUndoHistoryRecord {
+  return {
+    projectId,
+    redoHistory: [],
+    undoHistory: [],
+    updatedAt: Date.now(),
+  }
+}
+
+function normalizeProjectUndoHistoryRecord(
+  history: ProjectUndoHistoryRecord
+): ProjectUndoHistoryRecord {
+  return {
+    ...history,
+    redoHistory: history.redoHistory.slice(-UNDO_HISTORY_LIMIT),
+    undoHistory: history.undoHistory.slice(-UNDO_HISTORY_LIMIT),
+  }
+}
+
+function getUndoHistoryAvailability(
+  history: ProjectUndoHistoryRecord
+): UndoHistoryAvailability {
+  return {
+    canRedo: history.redoHistory.length > 0,
+    canUndo: history.undoHistory.length > 0,
+  }
+}
+
+function createUndoSnapshot(
+  project: Project,
+  selection: Selection
+): UndoSnapshot {
+  return {
+    clips: project.clips.map(cloneTimelineClip),
+    exportSettings: { ...project.exportSettings },
+    musicTracks: project.musicTracks.map(cloneMusicTrack),
+    selection: cloneSelection(selection),
+  }
+}
+
+function applyUndoSnapshot(project: Project, snapshot: UndoSnapshot): Project {
+  return {
+    ...project,
+    clips: snapshot.clips.map(cloneTimelineClip),
+    exportSettings: { ...snapshot.exportSettings },
+    musicTracks: snapshot.musicTracks.map(cloneMusicTrack),
+    updatedAt: Date.now(),
+  }
+}
+
+function cloneTimelineClip(clip: TimelineClip): TimelineClip {
+  return { ...clip }
+}
+
+function cloneMusicTrack(track: MusicTrack): MusicTrack {
+  return { ...track }
+}
+
+function cloneSelection(selection: Selection): Selection {
+  return selection.type === "project" ? { type: "project" } : { ...selection }
+}
+
+function getRestorableUndoSelection(
+  snapshot: UndoSnapshot,
+  project: Project
+): Selection {
+  const nextSelection = snapshot.selection
+
+  if (nextSelection.type === "clip") {
+    return project.clips.some((clip) => clip.id === nextSelection.id)
+      ? nextSelection
+      : { type: "project" }
+  }
+
+  if (nextSelection.type === "music") {
+    return project.musicTracks.some((track) => track.id === nextSelection.id)
+      ? nextSelection
+      : { type: "project" }
+  }
+
+  return { type: "project" }
+}
+
+function areUndoSnapshotsEqual(a: UndoSnapshot, b: UndoSnapshot) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function appendUndoHistoryEntry(
+  history: UndoHistoryEntry[],
+  entry: UndoHistoryEntry
+) {
+  const previous = history[history.length - 1]
+
+  if (
+    previous?.mergeKey &&
+    entry.mergeKey &&
+    previous.mergeKey === entry.mergeKey &&
+    entry.committedAt - previous.committedAt <= UNDO_COALESCE_MS
+  ) {
+    return appendBoundedHistoryEntry(history.slice(0, -1), {
+      ...previous,
+      action: entry.action,
+      committedAt: entry.committedAt,
+    })
+  }
+
+  return appendBoundedHistoryEntry(history, entry)
+}
+
+function appendBoundedHistoryEntry(
+  history: UndoHistoryEntry[],
+  entry: UndoHistoryEntry
+) {
+  return [...history, entry].slice(-UNDO_HISTORY_LIMIT)
+}
+
+function getClipPatchUndoAction(patch: Partial<TimelineClip>) {
+  if (
+    patch.sourceStartSeconds !== undefined ||
+    patch.sourceEndSeconds !== undefined
+  ) {
+    return "trim clip"
+  }
+
+  if (
+    patch.timelineStartSeconds !== undefined ||
+    patch.trackIndex !== undefined
+  ) {
+    return "move timeline item"
+  }
+
+  if (patch.volume !== undefined || patch.muted !== undefined) {
+    return "clip volume change"
+  }
+
+  if (patch.scale !== undefined) {
+    return "clip zoom change"
+  }
+
+  if (patch.positionX !== undefined || patch.positionY !== undefined) {
+    return "clip position change"
+  }
+
+  return "clip change"
+}
+
+function getClipPatchUndoMergeKey(id: string, patch: Partial<TimelineClip>) {
+  if (patch.volume !== undefined || patch.muted !== undefined) {
+    return `clip:${id}:volume`
+  }
+
+  if (patch.scale !== undefined) {
+    return `clip:${id}:scale`
+  }
+
+  if (patch.positionX !== undefined || patch.positionY !== undefined) {
+    return `clip:${id}:position`
+  }
+
+  if (
+    patch.sourceStartSeconds !== undefined ||
+    patch.sourceEndSeconds !== undefined
+  ) {
+    return `clip:${id}:trim`
+  }
+
+  return undefined
+}
+
+function getMusicPatchUndoAction(patch: Partial<MusicTrack>) {
+  if (
+    patch.sourceStartSeconds !== undefined ||
+    patch.sourceEndSeconds !== undefined
+  ) {
+    return "trim audio"
+  }
+
+  if (
+    patch.timelineStartSeconds !== undefined ||
+    patch.trackIndex !== undefined
+  ) {
+    return "move audio"
+  }
+
+  if (patch.volume !== undefined) {
+    return "audio volume change"
+  }
+
+  return "audio change"
+}
+
+function getMusicPatchUndoMergeKey(id: string, patch: Partial<MusicTrack>) {
+  if (patch.volume !== undefined) {
+    return `music:${id}:volume`
+  }
+
+  if (
+    patch.sourceStartSeconds !== undefined ||
+    patch.sourceEndSeconds !== undefined
+  ) {
+    return `music:${id}:trim`
+  }
+
+  return undefined
+}
+
+function getProjectSettingsPatchUndoAction(
+  patch: Partial<Project["exportSettings"]>
+) {
+  if (patch.width !== undefined || patch.height !== undefined) {
+    return "project resolution change"
+  }
+
+  if (patch.fps !== undefined) {
+    return "project frame rate change"
+  }
+
+  if (patch.format !== undefined) {
+    return "export format change"
+  }
+
+  if (patch.compression !== undefined) {
+    return "export compression change"
+  }
+
+  return "project settings change"
+}
+
+function showUndoRedoToast(kind: "undo" | "redo", action: string) {
+  const Icon = kind === "undo" ? Undo : Redo
+
+  toast(kind === "undo" ? `Undid ${action}` : `Redid ${action}`, {
+    duration: 2500,
+    icon: <Icon className="size-4 text-muted-foreground" />,
+  })
 }
 
 function isTextEditingTarget(target: EventTarget | null) {
