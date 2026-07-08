@@ -292,7 +292,7 @@ const CheckboxItem = forwardRef<HTMLDivElement, CheckboxItemProps>(
         className={cn(
           // Fixed height (was py-1.5 around a 19.5px line box ≈ 31.5px) so the
           // text-box trim on the label doesn't shrink the row.
-          `relative z-10 flex h-8 items-center gap-2.5 ${shape.item} px-3 cursor-pointer outline-none`,
+          `relative z-10 flex h-8 items-center gap-2.5 ${shape.item} px-3 outline-none`,
           className
         )}
         {...props}
@@ -303,7 +303,7 @@ const CheckboxItem = forwardRef<HTMLDivElement, CheckboxItemProps>(
           onCheckedChange={() => onToggle()}
           tabIndex={-1}
           aria-hidden
-          className="relative w-[15px] h-[15px] shrink-0 appearance-none bg-transparent p-0 border-0 outline-none cursor-pointer"
+          className="relative w-[15px] h-[15px] shrink-0 appearance-none bg-transparent p-0 border-0 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Border */}

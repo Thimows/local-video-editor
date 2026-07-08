@@ -168,7 +168,7 @@ const Switch = forwardRef<HTMLDivElement, SwitchProps>(
       <div
         ref={ref}
         className={cn(
-          "relative z-10 flex items-center gap-2.5 px-3 py-2 cursor-pointer select-none touch-none",
+          "relative z-10 flex items-center gap-2.5 px-3 py-2 select-none touch-none",
           disabled && "opacity-50 pointer-events-none",
           className
         )}
@@ -198,7 +198,7 @@ const Switch = forwardRef<HTMLDivElement, SwitchProps>(
           disabled={disabled}
           tabIndex={0}
           className={cn(
-            "relative shrink-0 rounded-full outline-none cursor-pointer",
+            "relative shrink-0 rounded-full outline-none",
             "transition-colors duration-80",
             "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           )}

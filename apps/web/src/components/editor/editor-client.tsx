@@ -2,23 +2,18 @@
 
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import {
   IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
-  IconDeviceDesktopFilled as Monitor,
-  IconDots as Dots,
   IconExclamationCircleFilled as CircleExclamation,
   IconFileDownloadFilled as Download,
   IconHandStop as HandStop,
   IconLoader2 as Loader,
   IconMagnet as Magnet,
   IconMagnetOff as MagnetOff,
-  IconMoonFilled as Moon,
   IconScissors as Scissors,
-  IconSunFilled as Sun,
   IconTrash as Trash,
   IconFileUploadFilled as Upload,
   IconFolderOpenFilled as FolderOpen,
@@ -42,6 +37,7 @@ import type {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
+import { AppSettingsMenu } from "@/components/app-settings-menu"
 import { exportProjectToVideo } from "@/lib/editor/export-video"
 import {
   clearPreviewAudioDebug,
@@ -1445,7 +1441,7 @@ export function EditorClient() {
             multiple
             onChange={onFileInput}
           />
-          <EditorSettingsMenu />
+          <AppSettingsMenu />
           <Button variant="outline" size="sm" onClick={importWithPicker}>
             <Upload data-icon="inline-start" />
             Import
@@ -1603,58 +1599,6 @@ export function EditorClient() {
         }}
       />
     </main>
-  )
-}
-
-function EditorSettingsMenu() {
-  const { theme, setTheme } = useTheme()
-  const themeOptions = [
-    { label: "System", value: "system", icon: Monitor },
-    { label: "Light", value: "light", icon: Sun },
-    { label: "Dark", value: "dark", icon: Moon },
-  ]
-  const selectedTheme = theme ?? "system"
-  const selectedIndex = Math.max(
-    0,
-    themeOptions.findIndex((option) => option.value === selectedTheme)
-  )
-
-  return (
-    <DropdownMenu>
-      <Tooltip content="Editor settings">
-        <span className="inline-flex">
-          <DropdownTrigger
-            render={
-              <Button
-                type="button"
-                variant="outline"
-                size="icon-sm"
-                aria-label="Editor settings"
-              >
-                <Dots />
-              </Button>
-            }
-          />
-        </span>
-      </Tooltip>
-      <DropdownContent
-        align="end"
-        checkedIndex={selectedIndex}
-        className="z-[5010] w-48"
-      >
-        <DropdownLabel>Theme</DropdownLabel>
-        {themeOptions.map((option, index) => (
-          <MenuItem
-            key={option.value}
-            index={index}
-            icon={option.icon}
-            label={option.label}
-            checked={selectedTheme === option.value}
-            onSelect={() => setTheme(option.value)}
-          />
-        ))}
-      </DropdownContent>
-    </DropdownMenu>
   )
 }
 
@@ -2179,14 +2123,21 @@ function ExportDialog({
             </DropdownMenu>
           </div>
 
-          <Metric
-            label="Size"
-            value={`${project.exportSettings.width}x${project.exportSettings.height}`}
-          />
-          <Metric
-            label="Frame rate"
-            value={`${project.exportSettings.fps} fps`}
-          />
+          <div className="text-sm">
+            <Label className="mb-1 block text-xs font-normal text-muted-foreground">
+              Project properties
+            </Label>
+            <div className="grid gap-1">
+              <Metric
+                label="Size"
+                value={`${project.exportSettings.width}x${project.exportSettings.height}`}
+              />
+              <Metric
+                label="Frame rate"
+                value={`${project.exportSettings.fps} fps`}
+              />
+            </div>
+          </div>
 
           <Progress value={Math.round(exportState.progress * 100)}>
             <ProgressLabel>{exportState.message}</ProgressLabel>
@@ -5009,7 +4960,7 @@ function Timeline({
             </span>
           </Tooltip>
         </div>
-        <div className="flex w-64 shrink-0 items-center gap-2">
+        <div className="flex w-52 shrink-0 items-center gap-2">
           <Label className="text-xs">Zoom</Label>
           <Slider
             value={[getTimelineZoomSliderValue(zoom)]}

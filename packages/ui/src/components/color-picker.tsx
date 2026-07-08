@@ -708,7 +708,7 @@ function FormatItem({
           ref={ref}
           data-proximity-index={index}
           className={cn(
-            `relative z-10 flex items-center px-3 py-2 text-[13px] cursor-pointer outline-none`,
+            `relative z-10 flex items-center px-3 py-2 text-[13px] outline-none`,
             shape.item
           )}
         />
@@ -823,7 +823,7 @@ function FormatDropdown({
     >
       <Menu.Trigger
         className={cn(
-          "flex items-center justify-between gap-2 h-9 px-3 text-[13px] bg-transparent hover:bg-hover hover:text-foreground transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] cursor-pointer",
+          "flex items-center justify-between gap-2 h-9 px-3 text-[13px] bg-transparent hover:bg-hover hover:text-foreground transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
           open ? "bg-active text-foreground" : "text-muted-foreground active:bg-active",
           shape.input
         )}
@@ -1415,7 +1415,7 @@ function EyeDropperButton({ onPick }: { onPick: (hex: string) => void }) {
       onClick={handleClick}
       aria-label="Pick color from screen"
       className={cn(
-        "flex items-center justify-center h-9 px-3 text-muted-foreground bg-transparent hover:bg-hover hover:text-foreground active:bg-active transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] cursor-pointer",
+        "flex items-center justify-center h-9 px-3 text-muted-foreground bg-transparent hover:bg-hover hover:text-foreground active:bg-active transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
         shape.input
       )}
     >
@@ -1475,7 +1475,7 @@ const ColorSwatch = forwardRef<HTMLButtonElement, ColorSwatchProps>(
         type="button"
         aria-label={`Select color ${color}`}
         className={cn(
-          "relative shrink-0 overflow-hidden cursor-pointer outline-none transition-shadow duration-100",
+          "relative shrink-0 overflow-hidden outline-none transition-shadow duration-100",
           shape.bg,
           className
         )}
@@ -2020,7 +2020,7 @@ const ColorPickerPopover = forwardRef<HTMLDivElement, ColorPickerPopoverProps>(
         <div ref={ref} className="inline-flex">
           <Popover.Trigger
             className={cn(
-              "flex items-center gap-2 h-9 px-2 border border-border bg-transparent hover:bg-hover transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] cursor-pointer",
+              "flex items-center gap-2 h-9 px-2 border border-border bg-transparent hover:bg-hover transition-colors duration-80 outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
               shape.input,
               triggerClassName
             )}
@@ -2058,7 +2058,7 @@ const ColorPickerPopover = forwardRef<HTMLDivElement, ColorPickerPopoverProps>(
                     onTriggerRemove?.();
                   }
                 }}
-                className="ml-1 text-muted-foreground hover:text-foreground cursor-pointer flex items-center"
+                className="ml-1 text-muted-foreground hover:text-foreground flex items-center"
               >
                 <XIcon size={14} strokeWidth={1.5} />
               </span>

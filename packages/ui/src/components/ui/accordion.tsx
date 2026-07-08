@@ -687,7 +687,7 @@ const AccordionTrigger = forwardRef<HTMLButtonElement, AccordionTriggerProps>(
         <AccordionPrimitive.Trigger
           ref={ref as React.Ref<HTMLElement>}
           className={cn(
-            `relative z-10 flex items-center gap-2.5 ${shape.item} px-3 py-2 w-full cursor-pointer outline-none select-none`,
+            `relative z-10 flex items-center gap-2.5 ${shape.item} px-3 py-2 w-full outline-none select-none`,
             !groupCtx?.grouped &&
               "focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)] focus-visible:ring-offset-0",
             className

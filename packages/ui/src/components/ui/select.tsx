@@ -161,7 +161,7 @@ Select.displayName = "Select";
 
 const triggerVariants = cva(
   [
-    "group inline-flex items-center justify-between gap-2 outline-none cursor-pointer",
+    "group inline-flex items-center justify-between gap-2 outline-none",
     "text-[13px] h-9 px-3 min-w-[160px]",
     "transition-all duration-80",
     "disabled:opacity-50 disabled:pointer-events-none",
@@ -550,7 +550,7 @@ const SelectItem = forwardRef<HTMLDivElement, SelectItemProps>(
             className={cn(
               // Fixed height (was py-2 around a 19.5px line box ≈ 35.5px) so
               // the text-box trim on the item text doesn't shrink the row.
-              `relative z-10 flex h-9 items-center gap-2 ${shape.item} px-2 text-[13px] cursor-pointer outline-none select-none`,
+              `relative z-10 flex h-9 items-center gap-2 ${shape.item} px-2 text-[13px] outline-none select-none`,
               "transition-[color] duration-80",
               isActive || isChecked
                 ? "text-foreground"
