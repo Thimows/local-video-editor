@@ -1,4 +1,4 @@
-const CACHE_NAME = "local-video-editor-v2"
+const CACHE_NAME = "local-video-editor-v3"
 const APP_SHELL = ["/", "/projects", "/manifest.webmanifest"]
 const CACHE_PROJECT_ROUTES_MESSAGE = "CACHE_PROJECT_ROUTES"
 const PROJECT_EDITOR_PATH_PATTERN = /^\/projects\/[^/]+$/
@@ -92,6 +92,9 @@ async function cacheProjectRoutes(paths) {
 
       const request = new Request(new URL(url.pathname, self.location.origin), {
         credentials: "same-origin",
+        headers: {
+          Accept: "text/html",
+        },
       })
       const response = await fetch(request).catch(() => null)
 
@@ -109,7 +112,10 @@ async function getNavigationFallback(url) {
       credentials: "same-origin",
     }
   )
-  const cachedNavigation = await caches.match(normalizedRequest)
+  const cachedNavigation = await caches.match(normalizedRequest, {
+    ignoreSearch: true,
+    ignoreVary: true,
+  })
 
   if (cachedNavigation) {
     return cachedNavigation
