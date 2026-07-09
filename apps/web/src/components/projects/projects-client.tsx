@@ -19,6 +19,7 @@ import { trackAnalyticsEvent } from "@/lib/analytics/posthog"
 import { createEmptyProject } from "@/lib/editor/project"
 import { deleteProject, listProjects, saveProject } from "@/lib/editor/db"
 import type { ProjectSummary } from "@/lib/editor/types"
+import { cacheProjectEditorRoutes } from "@/lib/offline/project-route-cache"
 import { Button } from "@workspace/ui/components/button"
 import {
   Dialog,
@@ -57,6 +58,9 @@ export function ProjectsClient({
     try {
       const nextProjects = await listProjects()
       setProjects(nextProjects)
+      cacheProjectEditorRoutes(nextProjects.map((project) => project.id)).catch(
+        () => undefined
+      )
       if (
         autoOpenCreateDialog &&
         !didAutoOpenCreateDialogRef.current &&
@@ -90,6 +94,7 @@ export function ProjectsClient({
       setIsCreating(true)
       const project = createEmptyProject(name.trim() || "Untitled project")
       await saveProject(project)
+      await cacheProjectEditorRoutes([project.id]).catch(() => undefined)
       trackAnalyticsEvent("project_created", {
         existing_project_count: projects.length,
       })
