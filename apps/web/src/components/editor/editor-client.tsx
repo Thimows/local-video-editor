@@ -40,6 +40,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
+import { NonChromiumBrowserWarningDialog } from "@/components/editor/non-chromium-browser-warning-dialog"
 import { trackAnalyticsEvent } from "@/lib/analytics/posthog"
 import {
   EXPORT_COMPRESSION_OPTIONS,
@@ -2141,6 +2142,7 @@ export function EditorClient() {
           void commitReconnectAsset(reconnect)
         }}
       />
+      <NonChromiumBrowserWarningDialog />
     </main>
   )
 }

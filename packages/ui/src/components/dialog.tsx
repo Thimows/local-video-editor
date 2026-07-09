@@ -48,11 +48,18 @@ function DialogDescription({
 
 type DialogContentProps = DialogPrimitive.Popup.Props & {
   backdropClassName?: string
+  showCloseButton?: boolean
 }
 
 const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
   function DialogContent(
-    { backdropClassName, className, children, ...props },
+    {
+      backdropClassName,
+      className,
+      children,
+      showCloseButton = true,
+      ...props
+    },
     ref
   ) {
     return (
@@ -73,19 +80,21 @@ const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
           {...props}
         >
           {children}
-          <DialogClose
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="absolute top-3 right-3"
-                aria-label="Close dialog"
-              />
-            }
-          >
-            <X />
-          </DialogClose>
+          {showCloseButton ? (
+            <DialogClose
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute top-3 right-3"
+                  aria-label="Close dialog"
+                />
+              }
+            >
+              <X />
+            </DialogClose>
+          ) : null}
         </DialogPrimitive.Popup>
       </DialogPortal>
     )

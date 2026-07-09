@@ -1,10 +1,19 @@
 import type { Project, ProjectSummary, ProjectUndoHistoryRecord } from "./types"
 
 const DB_NAME = "local-video-editor"
-const DB_VERSION = 2
+const DB_VERSION = 3
 const PROJECT_STORE = "projects"
 const PROJECT_UNDO_HISTORY_STORE = "projectUndoHistory"
+const SETTINGS_STORE = "settings"
+const NON_CHROMIUM_BROWSER_WARNING_KEY =
+  "nonChromiumBrowserWarningAcknowledgedAt"
 const MAX_PERSISTED_FILE_BLOB_BYTES = 1024 * 1024 * 1024
+
+type SettingRecord = {
+  key: string
+  updatedAt: number
+  value: unknown
+}
 
 function ensureBrowser() {
   if (typeof window === "undefined" || !("indexedDB" in window)) {
@@ -29,6 +38,10 @@ function openDatabase(): Promise<IDBDatabase> {
         db.createObjectStore(PROJECT_UNDO_HISTORY_STORE, {
           keyPath: "projectId",
         })
+      }
+
+      if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
+        db.createObjectStore(SETTINGS_STORE, { keyPath: "key" })
       }
     }
 
@@ -135,6 +148,38 @@ export async function saveProjectUndoHistory(
 export async function deleteProjectUndoHistory(projectId: string) {
   await withNamedStore(PROJECT_UNDO_HISTORY_STORE, "readwrite", (store) =>
     store.delete(projectId)
+  )
+}
+
+export async function getNonChromiumBrowserWarningAcknowledgedAt() {
+  const record =
+    ((await withNamedStore(SETTINGS_STORE, "readonly", (store) =>
+      store.get(NON_CHROMIUM_BROWSER_WARNING_KEY)
+    )) as SettingRecord | undefined) ?? null
+  const value = record?.value
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === "string") {
+    const parsed = Date.parse(value)
+
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  return null
+}
+
+export async function saveNonChromiumBrowserWarningAcknowledgedAt(
+  acknowledgedAt = Date.now()
+) {
+  await withNamedStore(SETTINGS_STORE, "readwrite", (store) =>
+    store.put({
+      key: NON_CHROMIUM_BROWSER_WARNING_KEY,
+      updatedAt: Date.now(),
+      value: acknowledgedAt,
+    })
   )
 }
 

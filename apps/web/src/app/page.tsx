@@ -12,6 +12,7 @@ import {
 } from "@tabler/icons-react"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
+import { ChromiumBrowserPills } from "@/components/chromium-browser-support"
 import { LandingPixelBlast } from "@/components/landing-pixel-blast"
 import { Button } from "@workspace/ui/components/button"
 
@@ -92,29 +93,6 @@ const highlights = [
   },
 ]
 
-const supportedBrowsers = [
-  {
-    name: "Chrome",
-    icon: "/landing/browsers/chrome.png",
-  },
-  {
-    name: "Edge",
-    icon: "/landing/browsers/edge.png",
-  },
-  {
-    name: "Arc",
-    icon: "/landing/browsers/arc.png",
-  },
-  {
-    name: "Dia",
-    icon: "/landing/browsers/dia.png",
-  },
-  {
-    name: "Brave",
-    icon: "/landing/browsers/brave.png",
-  },
-]
-
 export default function Page() {
   return (
     <main className="flex h-svh min-h-[520px] w-full flex-col overflow-hidden bg-background p-3 pt-0 text-foreground">
@@ -170,13 +148,39 @@ export default function Page() {
                     Free online video editor that keeps files on your computer.
                   </h1>
                   <p className="max-w-2xl text-lg leading-7 text-muted-foreground">
-                    Local Video Editor lets you cut, arrange, preview, and
-                    export videos in the browser without uploading your media.
-                    It is built for simple private editing: no account, no cloud
-                    processing, and no watermark on export.
+                    Local Video Editor lets you{" "}
+                    <span className="font-medium text-foreground">cut</span>,{" "}
+                    <span className="font-medium text-foreground">arrange</span>
+                    ,{" "}
+                    <span className="font-medium text-foreground">preview</span>
+                    , and{" "}
+                    <span className="font-medium text-foreground">export</span>{" "}
+                    videos in the browser{" "}
+                    <span className="font-medium text-foreground">
+                      without uploading
+                    </span>{" "}
+                    your media. It is built for simple private editing:{" "}
+                    <span className="font-medium text-foreground">
+                      no account
+                    </span>
+                    ,{" "}
+                    <span className="font-medium text-foreground">
+                      no cloud processing
+                    </span>
+                    , and{" "}
+                    <span className="font-medium text-foreground">
+                      no watermark
+                    </span>{" "}
+                    on export.
                   </p>
                 </div>
-                <BrowserSupport />
+                <div className="grid gap-2.5">
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Works best on{" "}
+                    <span className="text-foreground">Chromium browsers</span>
+                  </p>
+                  <ChromiumBrowserPills />
+                </div>
                 <div className="flex flex-wrap gap-2 pt-2">
                   <Button
                     type="button"
@@ -340,35 +344,5 @@ export default function Page() {
         </div>
       </section>
     </main>
-  )
-}
-
-function BrowserSupport() {
-  return (
-    <div className="grid gap-2.5">
-      <p className="text-sm font-medium text-muted-foreground">
-        Works best on{" "}
-        <span className="text-foreground">Chromium browsers</span>
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        {supportedBrowsers.map((browser) => (
-          <div
-            key={browser.name}
-            title={browser.name}
-            aria-label={browser.name}
-            className="flex items-center gap-1.5 rounded-xl bg-background/75 py-1.5 pr-3 pl-2 text-sm font-medium text-foreground backdrop-blur-md"
-          >
-            <Image
-              src={browser.icon}
-              alt={`${browser.name} app icon`}
-              width={36}
-              height={36}
-              className="size-9 object-contain"
-            />
-            <span>{browser.name}</span>
-          </div>
-        ))}
-      </div>
-    </div>
   )
 }
