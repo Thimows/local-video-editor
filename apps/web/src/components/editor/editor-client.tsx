@@ -1,11 +1,13 @@
 "use client"
 
+import Image from "next/image"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
   IconArrowBackUp as Undo,
   IconArrowForwardUp as Redo,
+  IconArrowUpRight as ArrowUpRight,
   IconChevronDown as ChevronDown,
   IconChevronLeft as ChevronLeft,
   IconCircleXFilled as VolumeX,
@@ -23,6 +25,7 @@ import {
   IconLink as LinkIcon,
   IconPlayerPauseFilled as Pause,
   IconPlayerPlayFilled as Play,
+  IconPlus as Plus,
   IconPointer as Cursor,
   IconPointerFilled as MousePointer2,
   IconVideoFilled as Film,
@@ -218,6 +221,20 @@ const MAX_MEDIA_VOLUME = 2
 const WAVEFORM_MIN_VISIBLE_VOLUME = 0.001
 const MAX_PERSISTED_FILE_BLOB_BYTES = 1024 * 1024 * 1024
 const CARD_CLASS = "rounded-xl bg-card"
+const STEPFORM_PROMO_URL =
+  "https://stepform.ai/?ref=local-video-editor&utm_source=localvideoeditor.com&utm_medium=editor_promo&utm_campaign=local_video_editor"
+const STEPFORM_PROMO_TAGLINES = [
+  { id: "ai_lead_funnels", text: "Build multi-step lead funnels with AI" },
+  { id: "video_voice_responses", text: "Collect video and voice responses" },
+  { id: "partial_response_capture", text: "Capture partial responses automatically" },
+  { id: "structured_response_data", text: "Turn form responses into structured data" },
+  { id: "automatic_lead_enrichment", text: "Enrich every new lead automatically" },
+  { id: "smart_conditional_routing", text: "Route leads with smart conditional logic" },
+  { id: "ai_chat_builder", text: "Build polished forms by chatting with AI" },
+  { id: "visual_canvas_builder", text: "Create forms on a visual canvas" },
+  { id: "response_pipeline", text: "Manage every response in your pipeline" },
+  { id: "form_follow_up", text: "Automate follow-up from every form" },
+] as const
 const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
 const DEFAULT_INSPECTOR_WIDTH = 320
 const MIN_INSPECTOR_WIDTH = 240
@@ -1350,7 +1367,17 @@ export function EditorClient() {
       return
     }
 
-    const selected = await chooseLocalFiles("video,audio").catch(() => [])
+    let selected: Awaited<ReturnType<typeof chooseLocalFiles>>
+
+    try {
+      selected = await chooseLocalFiles("video,audio")
+    } catch (reason) {
+      if (!isFilePickerCancelError(reason)) {
+        document.getElementById("media-import")?.click()
+      }
+
+      return
+    }
 
     if (selected.length > 0) {
       await importFiles(
@@ -1359,8 +1386,6 @@ export function EditorClient() {
           selected.map((item) => [item.file.name, item.fileHandle])
         )
       )
-    } else {
-      document.getElementById("media-import")?.click()
     }
   }
 
@@ -2010,30 +2035,34 @@ export function EditorClient() {
             gridTemplateColumns: `${inspectorWidth}px ${RESIZE_GAP_SIZE}px minmax(0, 1fr)`,
           }}
         >
-          <InspectorPanel
-            view={inspectorView}
-            onViewChange={setInspectorView}
-            project={project}
-            selectedAsset={selectedAsset}
-            selectedClip={selectedClip}
-            selectedMusic={selectedMusic}
-            missingAssets={missingAssets}
-            onClipChange={updateClip}
-            onMusicChange={updateMusic}
-            onProjectChange={(patch) =>
-              commitProjectChange(
-                {
-                  ...project,
-                  exportSettings: { ...project.exportSettings, ...patch },
-                  updatedAt: Date.now(),
-                },
-                getProjectSettingsPatchUndoAction(patch)
-              )
-            }
-            onReconnect={reconnectAsset}
-            onSourceAssetDragStart={setDraggedSourceAssetId}
-            onSourceAssetDragEnd={() => setDraggedSourceAssetId(null)}
-          />
+          <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-3">
+            <InspectorPanel
+              view={inspectorView}
+              onViewChange={setInspectorView}
+              project={project}
+              selectedAsset={selectedAsset}
+              selectedClip={selectedClip}
+              selectedMusic={selectedMusic}
+              missingAssets={missingAssets}
+              onClipChange={updateClip}
+              onMusicChange={updateMusic}
+              onProjectChange={(patch) =>
+                commitProjectChange(
+                  {
+                    ...project,
+                    exportSettings: { ...project.exportSettings, ...patch },
+                    updatedAt: Date.now(),
+                  },
+                  getProjectSettingsPatchUndoAction(patch)
+                )
+              }
+              onImport={importWithPicker}
+              onReconnect={reconnectAsset}
+              onSourceAssetDragStart={setDraggedSourceAssetId}
+              onSourceAssetDragEnd={() => setDraggedSourceAssetId(null)}
+            />
+            <StepformPromo />
+          </div>
           <div className="grid min-h-0 place-items-center">
             <ResizeGapHandle
               aria-label="Resize inspector"
@@ -2147,6 +2176,69 @@ export function EditorClient() {
   )
 }
 
+function StepformPromo() {
+  const [tagline, setTagline] = useState<(typeof STEPFORM_PROMO_TAGLINES)[number]>(
+    STEPFORM_PROMO_TAGLINES[0]
+  )
+
+  useEffect(() => {
+    const [randomValue] = window.crypto.getRandomValues(new Uint32Array(1))
+    const taglineIndex = (randomValue ?? 0) % STEPFORM_PROMO_TAGLINES.length
+    const nextTagline =
+      STEPFORM_PROMO_TAGLINES[taglineIndex] ?? STEPFORM_PROMO_TAGLINES[0]
+    const updateTaglineTimeout = window.setTimeout(() => {
+      setTagline(nextTagline)
+    }, 0)
+
+    return () => window.clearTimeout(updateTaglineTimeout)
+  }, [])
+
+  return (
+    <a
+      href={`${STEPFORM_PROMO_URL}&utm_content=${tagline.id}`}
+      target="_blank"
+      rel="noreferrer"
+      className={`${CARD_CLASS} group flex min-w-0 items-center gap-3 p-3 transition-colors outline-none hover:bg-card/80 focus-visible:ring-2 focus-visible:ring-ring`}
+      aria-label={`Visit Stepform: ${tagline.text}`}
+      onClick={() =>
+        trackAnalyticsEvent("stepform_promo_clicked", {
+          tagline: tagline.text,
+          tagline_id: tagline.id,
+        })
+      }
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-background">
+        <Image
+          src="/landing/brands/stepform-icon-black.svg"
+          alt=""
+          width={18}
+          height={18}
+          className="size-[18px] dark:hidden"
+        />
+        <Image
+          src="/landing/brands/stepform-icon-white.svg"
+          alt=""
+          width={18}
+          height={18}
+          className="hidden size-[18px] dark:block"
+        />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold">Stepform</span>
+          <span className="rounded-md bg-muted px-[5px] py-0.5 text-[9px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
+            Ad
+          </span>
+        </span>
+        <span className="mt-1 block text-xs leading-4 text-pretty text-muted-foreground transition-colors group-hover:text-foreground">
+          {tagline.text}
+        </span>
+      </span>
+      <ArrowUpRight className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+    </a>
+  )
+}
+
 function InspectorPanel({
   view,
   onViewChange,
@@ -2158,6 +2250,7 @@ function InspectorPanel({
   onClipChange,
   onMusicChange,
   onProjectChange,
+  onImport,
   onReconnect,
   onSourceAssetDragEnd,
   onSourceAssetDragStart,
@@ -2172,6 +2265,7 @@ function InspectorPanel({
   onClipChange: (id: string, patch: Partial<TimelineClip>) => void
   onMusicChange: (id: string, patch: Partial<MusicTrack>) => void
   onProjectChange: (patch: Partial<Project["exportSettings"]>) => void
+  onImport: () => void
   onReconnect: (
     assetId: string | string[],
     file: File,
@@ -2361,9 +2455,24 @@ function InspectorPanel({
       <div className="min-h-0 overflow-y-auto p-3">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="truncate text-base leading-5 font-semibold">
-              {heading}
-            </h2>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <h2 className="truncate text-base leading-5 font-semibold">
+                {heading}
+              </h2>
+              {view === "files" ? (
+                <Tooltip content="Import media">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-xs"
+                    aria-label="Import media"
+                    onClick={onImport}
+                  >
+                    <Plus className="size-[15px]" />
+                  </Button>
+                </Tooltip>
+              ) : null}
+            </div>
             {view === "selection" && selectedAsset ? (
               <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
                 <span className="truncate">
@@ -2937,16 +3046,24 @@ function ReconnectButton({
 
   async function reconnectWithPersistentPicker() {
     const accept = asset.type === "video" ? "video" : "audio"
-    const selected = await chooseLocalFiles(accept).catch(() => [])
+    let selected: Awaited<ReturnType<typeof chooseLocalFiles>>
+
+    try {
+      selected = await chooseLocalFiles(accept)
+    } catch (reason) {
+      if (!isFilePickerCancelError(reason)) {
+        inputRef.current?.click()
+      }
+
+      return
+    }
+
     const match =
       selected.find((item) => item.file.name === asset.name) ?? selected[0]
 
     if (match) {
       onReconnect(assetIds, match.file, match.fileHandle)
-      return
     }
-
-    inputRef.current?.click()
   }
 
   return (
@@ -7932,6 +8049,10 @@ function isTextEditingTarget(target: EventTarget | null) {
     tagName === "select" ||
     target.getAttribute("role") === "textbox"
   )
+}
+
+function isFilePickerCancelError(reason: unknown) {
+  return reason instanceof Error && reason.name === "AbortError"
 }
 
 function showUnsupportedMediaToast(files: File[]) {

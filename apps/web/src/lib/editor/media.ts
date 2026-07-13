@@ -1,5 +1,8 @@
 import type { Project, RuntimeAssetMap, SourceAssetType } from "./types"
 
+const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm"])
+const AUDIO_FILE_EXTENSIONS = new Set(["mp3", "m4a", "wav", "ogg"])
+
 export type MediaMetadata = {
   durationSeconds?: number
   width?: number
@@ -32,15 +35,37 @@ export type FileRestoreDiagnostic = {
 }
 
 export function getFileKind(file: File): SourceAssetType | null {
-  if (file.type.startsWith("video/")) {
+  const mimeType = file.type.toLowerCase()
+
+  if (mimeType.startsWith("video/")) {
     return "video"
   }
 
-  if (file.type.startsWith("audio/")) {
+  if (mimeType.startsWith("audio/")) {
+    return "audio"
+  }
+
+  const extension = getFileExtension(file.name)
+
+  if (VIDEO_FILE_EXTENSIONS.has(extension)) {
+    return "video"
+  }
+
+  if (AUDIO_FILE_EXTENSIONS.has(extension)) {
     return "audio"
   }
 
   return null
+}
+
+function getFileExtension(fileName: string) {
+  const extensionStart = fileName.lastIndexOf(".")
+
+  if (extensionStart < 0 || extensionStart === fileName.length - 1) {
+    return ""
+  }
+
+  return fileName.slice(extensionStart + 1).toLowerCase()
 }
 
 export function readMediaMetadata(
