@@ -3,6 +3,11 @@ import posthog from "posthog-js"
 const POSTHOG_PROJECT_TOKEN = process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN
 const APP_NAME = "local-video-editor"
 
+export const POSTHOG_APP_PROPERTIES = {
+  app_name: APP_NAME,
+  app_environment: getAppEnvironment(),
+} as const
+
 type AnalyticsProperties = Record<
   string,
   string | number | boolean | null | undefined
@@ -23,8 +28,7 @@ export function trackAnalyticsEvent(
   try {
     posthog.capture(event, {
       ...compactProperties(properties),
-      app_name: APP_NAME,
-      app_environment: getAppEnvironment(),
+      ...POSTHOG_APP_PROPERTIES,
     })
   } catch {
     // Analytics must never affect the local/offline editor experience.
