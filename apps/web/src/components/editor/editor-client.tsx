@@ -45,6 +45,7 @@ import { flushSync } from "react-dom"
 import { AppSettingsMenu } from "@/components/app-settings-menu"
 import { NonChromiumBrowserWarningDialog } from "@/components/editor/non-chromium-browser-warning-dialog"
 import { trackAnalyticsEvent } from "@/lib/analytics/posthog"
+import { EDITOR_PROMOTION } from "@/lib/editor/promotion"
 import {
   EXPORT_COMPRESSION_OPTIONS,
   getEstimatedExportSizeBytes,
@@ -215,26 +216,13 @@ type PreviewProxyAssetProgress = {
   total: number
 }
 type PreviewProxyAssetProgressMap = Record<string, PreviewProxyAssetProgress>
+const DEFAULT_TIMELINE_ZOOM = 4
 const TIMELINE_MIN_ZOOM = 0.4
 const TIMELINE_MAX_ZOOM = 80
 const MAX_MEDIA_VOLUME = 2
 const WAVEFORM_MIN_VISIBLE_VOLUME = 0.001
 const MAX_PERSISTED_FILE_BLOB_BYTES = 1024 * 1024 * 1024
 const CARD_CLASS = "rounded-xl bg-card"
-const STEPFORM_PROMO_URL =
-  "https://stepform.ai/?ref=local-video-editor&utm_source=localvideoeditor.com&utm_medium=editor_promo&utm_campaign=local_video_editor"
-const STEPFORM_PROMO_TAGLINES = [
-  { id: "ai_lead_funnels", text: "Build multi-step lead funnels with AI" },
-  { id: "video_voice_responses", text: "Collect video and voice responses" },
-  { id: "partial_response_capture", text: "Capture partial responses automatically" },
-  { id: "structured_response_data", text: "Turn form responses into structured data" },
-  { id: "automatic_lead_enrichment", text: "Enrich every new lead automatically" },
-  { id: "smart_conditional_routing", text: "Route leads with smart conditional logic" },
-  { id: "ai_chat_builder", text: "Build polished forms by chatting with AI" },
-  { id: "visual_canvas_builder", text: "Create forms on a visual canvas" },
-  { id: "response_pipeline", text: "Manage every response in your pipeline" },
-  { id: "form_follow_up", text: "Automate follow-up from every form" },
-] as const
 const EDITOR_LAYOUT_STORAGE_KEY = "local-video-editor:editor-layout"
 const DEFAULT_INSPECTOR_WIDTH = 320
 const MIN_INSPECTOR_WIDTH = 240
@@ -445,7 +433,7 @@ export function EditorClient() {
     useState<UndoHistoryAvailability>({ canRedo: false, canUndo: false })
   const [inspectorView, setInspectorView] = useState<InspectorView>("project")
   const [playheadSeconds, setPlayheadSeconds] = useState(0)
-  const [timelineZoom, setTimelineZoom] = useState(4)
+  const [timelineZoom, setTimelineZoom] = useState(DEFAULT_TIMELINE_ZOOM)
   const [snapEnabled, setSnapEnabled] = useState(true)
   const [previewResolutionScale, setPreviewResolutionScale] =
     useState<PreviewResolutionScale>(DEFAULT_PREVIEW_RESOLUTION_SCALE)
@@ -785,6 +773,15 @@ export function EditorClient() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        (event.target instanceof Element &&
+          event.target.closest('[role="dialog"], [role="alertdialog"]'))
+      ) {
+        return
+      }
+
       const isArrowKey = event.key === "ArrowLeft" || event.key === "ArrowRight"
       const isEscapeKey = event.key === "Escape"
       const key = event.key.toLowerCase()
@@ -1024,11 +1021,19 @@ export function EditorClient() {
       const persistedHistory = await getProjectUndoHistory(targetProject.id).catch(
         () => null
       )
+      if (!active) {
+        Object.values(result.runtimeAssets ?? {}).forEach((asset) =>
+          URL.revokeObjectURL(asset.objectUrl)
+        )
+        return
+      }
+
       const normalizedHistory = normalizeProjectUndoHistoryRecord(
         persistedHistory ??
           createEmptyProjectUndoHistoryRecord(targetProject.id)
       )
 
+      setTimelineZoom(getStoredProjectTimelineZoom(targetProject.id))
       setHistoryAvailability(getUndoHistoryAvailability(normalizedHistory))
       setProject(targetProject)
 
@@ -2035,7 +2040,13 @@ export function EditorClient() {
             gridTemplateColumns: `${inspectorWidth}px ${RESIZE_GAP_SIZE}px minmax(0, 1fr)`,
           }}
         >
-          <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-3">
+          <div
+            className={
+              EDITOR_PROMOTION.enabled
+                ? "grid min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-3"
+                : "grid min-h-0 grid-rows-[minmax(0,1fr)]"
+            }
+          >
             <InspectorPanel
               view={inspectorView}
               onViewChange={setInspectorView}
@@ -2061,7 +2072,7 @@ export function EditorClient() {
               onSourceAssetDragStart={setDraggedSourceAssetId}
               onSourceAssetDragEnd={() => setDraggedSourceAssetId(null)}
             />
-            <StepformPromo />
+            {EDITOR_PROMOTION.enabled && <EditorPromo />}
           </div>
           <div className="grid min-h-0 place-items-center">
             <ResizeGapHandle
@@ -2116,7 +2127,11 @@ export function EditorClient() {
           onSeekingChange={handleTimelineSeekingChange}
           onClipChange={updateClip}
           onMusicChange={updateMusic}
-          onZoomChange={setTimelineZoom}
+          onZoomChange={(zoom) => {
+            const nextZoom = clampTimelineZoom(zoom)
+            setTimelineZoom(nextZoom)
+            saveProjectTimelineZoom(project.id, nextZoom)
+          }}
           onSplit={splitSelectedClip}
           canSplit={Boolean(selectedClip)}
           onDelete={deleteSelectedTimelineItem}
@@ -2176,16 +2191,16 @@ export function EditorClient() {
   )
 }
 
-function StepformPromo() {
-  const [tagline, setTagline] = useState<(typeof STEPFORM_PROMO_TAGLINES)[number]>(
-    STEPFORM_PROMO_TAGLINES[0]
-  )
+function EditorPromo() {
+  const [tagline, setTagline] = useState<
+    (typeof EDITOR_PROMOTION.taglines)[number]
+  >(EDITOR_PROMOTION.taglines[0])
 
   useEffect(() => {
     const [randomValue] = window.crypto.getRandomValues(new Uint32Array(1))
-    const taglineIndex = (randomValue ?? 0) % STEPFORM_PROMO_TAGLINES.length
+    const taglineIndex = (randomValue ?? 0) % EDITOR_PROMOTION.taglines.length
     const nextTagline =
-      STEPFORM_PROMO_TAGLINES[taglineIndex] ?? STEPFORM_PROMO_TAGLINES[0]
+      EDITOR_PROMOTION.taglines[taglineIndex] ?? EDITOR_PROMOTION.taglines[0]
     const updateTaglineTimeout = window.setTimeout(() => {
       setTagline(nextTagline)
     }, 0)
@@ -2193,15 +2208,19 @@ function StepformPromo() {
     return () => window.clearTimeout(updateTaglineTimeout)
   }, [])
 
+  const promotionUrl = new URL(EDITOR_PROMOTION.url)
+  promotionUrl.searchParams.set("utm_content", tagline.id)
+
   return (
     <a
-      href={`${STEPFORM_PROMO_URL}&utm_content=${tagline.id}`}
+      href={promotionUrl.toString()}
       target="_blank"
       rel="noreferrer"
       className={`${CARD_CLASS} group flex min-w-0 items-center gap-3 p-3 transition-colors outline-none hover:bg-card/80 focus-visible:ring-2 focus-visible:ring-ring`}
-      aria-label={`Visit Stepform: ${tagline.text}`}
+      aria-label={`Visit ${EDITOR_PROMOTION.name}: ${tagline.text}`}
       onClick={() =>
-        trackAnalyticsEvent("stepform_promo_clicked", {
+        trackAnalyticsEvent("editor_promo_clicked", {
+          promotion_id: EDITOR_PROMOTION.id,
           tagline: tagline.text,
           tagline_id: tagline.id,
         })
@@ -2209,14 +2228,14 @@ function StepformPromo() {
     >
       <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-background">
         <Image
-          src="/landing/brands/stepform-icon-black.svg"
+          src={EDITOR_PROMOTION.lightIcon}
           alt=""
           width={18}
           height={18}
           className="size-[18px] dark:hidden"
         />
         <Image
-          src="/landing/brands/stepform-icon-white.svg"
+          src={EDITOR_PROMOTION.darkIcon}
           alt=""
           width={18}
           height={18}
@@ -2225,7 +2244,7 @@ function StepformPromo() {
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="text-xs font-semibold">Stepform</span>
+          <span className="text-xs font-semibold">{EDITOR_PROMOTION.name}</span>
           <span className="rounded-md bg-muted px-[5px] py-0.5 text-[9px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
             Ad
           </span>
@@ -5106,6 +5125,47 @@ function Timeline({
   const [snapPreview, setSnapPreview] = useState<TimelineSnapPreview | null>(
     null
   )
+  useEffect(() => {
+    function onTimelineKeyDown(event: KeyboardEvent) {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.shiftKey ||
+        isTextEditingTarget(event.target) ||
+        (event.target instanceof Element &&
+          event.target.closest('[role="dialog"], [role="alertdialog"]')) ||
+        isSeekingRef.current ||
+        panDragRef.current
+      ) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      const hasModifier = event.metaKey || event.ctrlKey
+
+      if (hasModifier && key === "b") {
+        event.preventDefault()
+        if (!event.repeat && canSplit) onSplit()
+        return
+      }
+
+      if (hasModifier || !["v", "h", "n"].includes(key)) return
+
+      event.preventDefault()
+      if (event.repeat) return
+
+      if (key === "n") {
+        onSnapEnabledChange(!snapEnabled)
+      } else {
+        setInteractionMode(key === "h" ? "pan" : "select")
+      }
+    }
+
+    window.addEventListener("keydown", onTimelineKeyDown)
+    return () => window.removeEventListener("keydown", onTimelineKeyDown)
+  }, [canSplit, onSnapEnabledChange, onSplit, snapEnabled])
+
   const snapItems = timelineItems
   const [waveforms, setWaveforms] = useState<TimelineWaveformMap>({})
   const waveformsRef = useRef<TimelineWaveformMap>({})
@@ -5710,6 +5770,7 @@ function Timeline({
         <div className="flex min-w-0 items-center gap-2">
           <Tooltip
             content={canSplit ? "Split selected clip" : "Select a clip to split"}
+            shortcut="⌘/Ctrl B"
           >
             <span className="inline-flex">
               <Button
@@ -5717,6 +5778,7 @@ function Timeline({
                 variant={canSplit ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Split clip"
+                aria-keyshortcuts="Meta+b Control+b"
                 onClick={onSplit}
                 disabled={!canSplit}
                 className={
@@ -5735,6 +5797,7 @@ function Timeline({
                 ? "Delete selected timeline item"
                 : "Select a timeline item to delete"
             }
+            shortcut="⌫ / Delete"
           >
             <span className="inline-flex">
               <Button
@@ -5742,6 +5805,7 @@ function Timeline({
                 variant={canDelete ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Delete selected timeline item"
+                aria-keyshortcuts="Backspace Delete"
                 onClick={onDelete}
                 disabled={!canDelete}
                 className={
@@ -5755,7 +5819,7 @@ function Timeline({
             </span>
           </Tooltip>
           <div className="h-5 w-px bg-border" aria-hidden="true" />
-          <Tooltip content="Select timeline items">
+          <Tooltip content="Select timeline items" shortcut="V">
             <span className="inline-flex">
               <Button
                 type="button"
@@ -5763,6 +5827,7 @@ function Timeline({
                 size="icon-sm"
                 active={interactionMode === "select"}
                 aria-label="Select timeline items"
+                aria-keyshortcuts="V"
                 aria-pressed={interactionMode === "select"}
                 onClick={() => setInteractionMode("select")}
               >
@@ -5770,7 +5835,7 @@ function Timeline({
               </Button>
             </span>
           </Tooltip>
-          <Tooltip content="Pan timeline">
+          <Tooltip content="Pan timeline" shortcut="H">
             <span className="inline-flex">
               <Button
                 type="button"
@@ -5778,6 +5843,7 @@ function Timeline({
                 size="icon-sm"
                 active={interactionMode === "pan"}
                 aria-label="Pan timeline"
+                aria-keyshortcuts="H"
                 aria-pressed={interactionMode === "pan"}
                 onClick={() => {
                   stopSeeking()
@@ -5794,6 +5860,7 @@ function Timeline({
                 ? "Disable timeline snapping"
                 : "Enable timeline snapping"
             }
+            shortcut="N"
           >
             <span className="inline-flex">
               <Button
@@ -5806,6 +5873,7 @@ function Timeline({
                     ? "Disable timeline snapping"
                     : "Enable timeline snapping"
                 }
+                aria-keyshortcuts="N"
                 aria-pressed={snapEnabled}
                 onClick={() => onSnapEnabledChange(!snapEnabled)}
               >
@@ -5814,13 +5882,17 @@ function Timeline({
             </span>
           </Tooltip>
           <div className="h-5 w-px bg-border" aria-hidden="true" />
-          <Tooltip content={canUndo ? "Undo last change" : "Nothing to undo"}>
+          <Tooltip
+            content={canUndo ? "Undo last change" : "Nothing to undo"}
+            shortcut="⌘/Ctrl Z"
+          >
             <span className="inline-flex">
               <Button
                 type="button"
                 variant={canUndo ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Undo last change"
+                aria-keyshortcuts="Meta+z Control+z"
                 onClick={onUndo}
                 disabled={!canUndo}
                 className={
@@ -5833,13 +5905,17 @@ function Timeline({
               </Button>
             </span>
           </Tooltip>
-          <Tooltip content={canRedo ? "Redo last change" : "Nothing to redo"}>
+          <Tooltip
+            content={canRedo ? "Redo last change" : "Nothing to redo"}
+            shortcut="⌘/Ctrl Shift Z"
+          >
             <span className="inline-flex">
               <Button
                 type="button"
                 variant={canRedo ? "outline" : "ghost"}
                 size="icon-sm"
                 aria-label="Redo last change"
+                aria-keyshortcuts="Meta+Shift+z Control+Shift+z Meta+y Control+y"
                 onClick={onRedo}
                 disabled={!canRedo}
                 className={
@@ -7742,6 +7818,40 @@ function getTimelineSeconds(
 
 function getSliderValue(value: number | readonly number[], fallback: number) {
   return Array.isArray(value) ? (value[0] ?? fallback) : value
+}
+
+function getProjectTimelineZoomStorageKey(projectId: string) {
+  return `local-video-editor:project:${projectId}:timeline-zoom`
+}
+
+function getStoredProjectTimelineZoom(projectId: string) {
+  if (typeof window === "undefined") return DEFAULT_TIMELINE_ZOOM
+
+  try {
+    const stored = window.localStorage.getItem(
+      getProjectTimelineZoomStorageKey(projectId)
+    )
+    const zoom: unknown = stored === null ? null : JSON.parse(stored)
+
+    return typeof zoom === "number" && Number.isFinite(zoom)
+      ? clampTimelineZoom(zoom)
+      : DEFAULT_TIMELINE_ZOOM
+  } catch {
+    return DEFAULT_TIMELINE_ZOOM
+  }
+}
+
+function saveProjectTimelineZoom(projectId: string, zoom: number) {
+  if (typeof window === "undefined" || !Number.isFinite(zoom)) return
+
+  try {
+    window.localStorage.setItem(
+      getProjectTimelineZoomStorageKey(projectId),
+      JSON.stringify(clampTimelineZoom(zoom))
+    )
+  } catch {
+    // Keep zoom usable when local storage is unavailable or full.
+  }
 }
 
 function getStoredEditorLayoutValue(

@@ -83,6 +83,8 @@ type TooltipSide = "top" | "right" | "bottom" | "left";
 
 interface TooltipProps {
   content: ReactNode;
+  /** Keyboard shortcut shown to the right of the label. */
+  shortcut?: string;
   children: React.ReactElement;
   side?: TooltipSide;
   sideOffset?: number;
@@ -119,6 +121,7 @@ function getSlideOffset(side: TooltipSide) {
 
 function Tooltip({
   content,
+  shortcut,
   children,
   side = "top",
   sideOffset = 8,
@@ -194,7 +197,13 @@ function Tooltip({
               );
             }}
           >
+            {/* Keep text inline so the popup's text-box trimming still applies. */}
             {content}
+            {shortcut && (
+              <kbd className="ml-4 font-sans text-[11px] whitespace-nowrap text-muted-foreground">
+                {shortcut}
+              </kbd>
+            )}
           </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>
       </TooltipPrimitive.Portal>

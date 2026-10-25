@@ -42,7 +42,26 @@ Projects are local to the browser profile in which they were created.
 - IndexedDB and OPFS for browser-local persistence
 - Turborepo with npm workspaces
 
-Node.js 20 or newer is required.
+Node.js 24.22.1 LTS and npm 12.2.1 are required.
+
+## Runtime and setup
+
+
+Use Node.js 24.22.1 LTS and npm 12.2.1. The Node version is pinned in
+`.nvmrc` and `.node-version`; `package.json` restricts the project to Node 24
+and records the npm version. With nvm:
+
+```bash
+nvm install
+nvm use
+npm install --global npm@12.2.1
+npm ci
+```
+
+Deployment environments should use Node 24.x. Keep `@types/node` on major 24
+to match the runtime. ESLint stays on major 9 because `eslint-plugin-react`
+does not support ESLint 10 yet. TypeScript stays on major 6 because
+`typescript-eslint` does not support TypeScript 7 yet.
 
 ## Getting started
 
@@ -113,7 +132,16 @@ and export cleanup in mind when changing media lifecycles.
 
 ## Optional Stepform and analytics integration
 
-The project includes Stepform promotional links and a feedback popup. The popup
+The editor promotion is disabled, and the landing-page Stepform credit has been
+removed. The project still includes an optional Stepform feedback popup. The popup
 is loaded in `apps/web/src/app/layout.tsx` and opened from the application
 settings menu. PostHog integration is optional and does nothing unless a public
 project token is configured.
+
+## Editor promotion
+
+The editor sidebar ad is disabled by default. To show a new promotion, update
+`apps/web/src/lib/editor/promotion.ts` with the brand ID, name, destination URL,
+light/dark icons, and taglines, then set `enabled` to `true`. Icon paths should
+point to files in `apps/web/public`. Rebuild and deploy to apply the change.
+Set `enabled` back to `false` to hide the card without leaving an empty slot.

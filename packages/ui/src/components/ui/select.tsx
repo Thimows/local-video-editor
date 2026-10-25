@@ -38,7 +38,7 @@ import { Elevated } from "@workspace/ui/lib/elevated";
 interface SelectContextValue {
   value: string;
   open: boolean;
-  actionsRef: React.RefObject<{ unmount: () => void } | null>;
+  actionsRef: React.RefObject<SelectPrimitive.Root.Actions | null>;
 }
 
 const SelectContext = createContext<SelectContextValue | null>(null);
@@ -111,7 +111,7 @@ function Select({
 }: SelectProps) {
   const [internalValue, setInternalValue] = useState(defaultValue ?? "");
   const [open, setOpen] = useState(false);
-  const actionsRef = useRef<{ unmount: () => void } | null>(null);
+  const actionsRef = useRef<SelectPrimitive.Root.Actions | null>(null);
   const currentValue = value !== undefined ? value : internalValue;
 
   const items = useMemo(() => collectSelectItems(children), [children]);
