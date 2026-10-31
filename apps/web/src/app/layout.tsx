@@ -1,14 +1,12 @@
 import { Geist } from "next/font/google"
 import localFont from "next/font/local"
 import type { Metadata } from "next"
-import Script from "next/script"
 
 import "@workspace/ui/globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { Toaster } from "@/components/toaster"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
-import { IconProvider } from "@workspace/ui/lib/icon-context"
 import { ShapeProvider } from "@workspace/ui/lib/shape-context"
 import { SurfaceProvider } from "@workspace/ui/lib/surface-context"
 import { cn } from "@workspace/ui/lib/utils"
@@ -93,26 +91,15 @@ export default function RootLayout({
     >
       <body>
         <ThemeProvider>
-          <IconProvider defaultLibrary="tabler">
-            <ShapeProvider defaultShape="pill">
-              <SurfaceProvider value={1}>
-                <TooltipProvider>
-                  <Script
-                    src="https://www.stepform.ai/embed/v1.js"
-                    strategy="afterInteractive"
-                  />
-                  <div
-                    data-stepform-popup="-V45DFBYhp"
-                    data-stepform-size="75"
-                    data-stepform-trigger="manual"
-                  />
-                  <ServiceWorkerRegister />
-                  {children}
-                  <Toaster />
-                </TooltipProvider>
-              </SurfaceProvider>
-            </ShapeProvider>
-          </IconProvider>
+          <ShapeProvider defaultShape="pill">
+            <SurfaceProvider value={1}>
+              <TooltipProvider>
+                <ServiceWorkerRegister />
+                {children}
+                <Toaster />
+              </TooltipProvider>
+            </SurfaceProvider>
+          </ShapeProvider>
         </ThemeProvider>
       </body>
     </html>

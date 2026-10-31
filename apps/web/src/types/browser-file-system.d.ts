@@ -32,9 +32,6 @@ interface Window {
   showOpenFilePicker?: (
     options?: OpenFilePickerOptions
   ) => Promise<FileSystemFileHandle[]>
-  stepform?: {
-    open: (id: string) => void
-  }
   __LOCAL_VIDEO_EDITOR_FILE_DEBUG__?: unknown
   __LOCAL_VIDEO_EDITOR_PROXY_DEBUG__?: {
     active: Record<string, LocalVideoEditorProxyDebugEntry>

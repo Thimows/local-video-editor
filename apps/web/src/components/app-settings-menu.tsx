@@ -27,7 +27,11 @@ export function AppSettingsMenu({
 }) {
   const { theme, setTheme } = useTheme()
   const openFeedback = () => {
-    window.stepform?.open("-V45DFBYhp")
+    window.open(
+      "https://github.com/Thimows/local-video-editor/issues",
+      "_blank",
+      "noopener,noreferrer"
+    )
   }
   const themeOptions = [
     { label: "System", value: "system", icon: Monitor },
@@ -70,7 +74,7 @@ export function AppSettingsMenu({
         <MenuItem
           index={feedbackIndex}
           icon={MessageCircle}
-          label="Submit feedback"
+          label="Feedback on GitHub"
           onSelect={openFeedback}
         />
         <DropdownSeparator />

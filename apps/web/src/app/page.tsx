@@ -178,6 +178,15 @@ export default function Page() {
 
               <div className="relative z-10 grid gap-5">
                 <div className="pointer-events-none absolute -inset-x-8 -inset-y-7 -z-10 rounded-3xl bg-card/80 blur-2xl" />
+                <iframe
+                  src="https://ghbtns.com/github-btn.html?user=Thimows&repo=local-video-editor&type=star&count=true"
+                  width="150"
+                  height="20"
+                  title="Star Local Video Editor on GitHub"
+                  className="overflow-hidden border-0"
+                  scrolling="no"
+                  referrerPolicy="no-referrer"
+                />
                 <div
                   className="space-y-2"
                   style={{

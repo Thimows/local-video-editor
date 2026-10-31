@@ -1,3 +1,8 @@
+/*!
+ * PixelBlast from React Bits, copyright (c) 2026 David Haz.
+ * MIT + Commons Clause. See PixelBlast.LICENSE.md and /third-party-notices.txt.
+ * Upstream revision: 3ca46cae7fe8a89dfd3fed5dc419e94e25fc7aac.
+ */
 'use client';
 
 import { Effect, EffectComposer, EffectPass, RenderPass } from 'postprocessing';

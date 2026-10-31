@@ -15,7 +15,6 @@ import { formatDistanceToNow } from "date-fns"
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 
 import { AppSettingsMenu } from "@/components/app-settings-menu"
-import { trackAnalyticsEvent } from "@/lib/analytics/posthog"
 import { createEmptyProject } from "@/lib/editor/project"
 import { deleteProject, listProjects, saveProject } from "@/lib/editor/db"
 import type { ProjectSummary } from "@/lib/editor/types"
@@ -95,9 +94,6 @@ export function ProjectsClient({
       const project = createEmptyProject(name.trim() || "Untitled project")
       await saveProject(project)
       await cacheProjectEditorRoutes([project.id]).catch(() => undefined)
-      trackAnalyticsEvent("project_created", {
-        existing_project_count: projects.length,
-      })
       setIsCreateDialogOpen(false)
       router.push(`/projects/${project.id}`)
     } catch (reason) {

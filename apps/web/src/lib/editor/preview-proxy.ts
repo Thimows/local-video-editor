@@ -715,7 +715,7 @@ function publishPreviewProxyDebug(
   > = {},
   shouldLog = true
 ) {
-  if (typeof window === "undefined") {
+  if (process.env.NODE_ENV !== "development" || typeof window === "undefined") {
     return
   }
 
