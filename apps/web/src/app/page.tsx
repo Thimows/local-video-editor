@@ -183,7 +183,7 @@ export default function Page() {
                   width="150"
                   height="20"
                   title="Star Local Video Editor on GitHub"
-                  className="overflow-hidden border-0"
+                  className="overflow-hidden border-0 bg-transparent [color-scheme:normal]"
                   scrolling="no"
                   referrerPolicy="no-referrer"
                 />
