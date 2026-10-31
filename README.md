@@ -39,18 +39,29 @@ processing time, and local storage. Keep the editor open while exporting.
 
 ## Run locally
 
-You need Git, Node.js **24.22.1**, and npm **12.2.1**. The Node version is pinned
-in `.nvmrc` and `.node-version`. With [nvm](https://github.com/nvm-sh/nvm):
+You need Git, Node.js **24.22.1 or newer within 24.x**, and npm **12.2.1 or
+newer within 12.x**. If compatible versions are already installed, run:
 
 ```bash
 git clone https://github.com/Thimows/local-video-editor.git
 cd local-video-editor
-nvm install
-nvm use
-npm install --global npm@12.2.1
 npm ci
 npm run dev
 ```
+
+**nvm is optional.** [Node Version Manager](https://github.com/nvm-sh/nvm)
+can install and select the project's pinned Node.js version. If you already use
+nvm, run the following from the repository root before `npm ci`:
+
+```bash
+nvm install
+nvm use
+```
+
+The pinned Node version is recorded in `.nvmrc` and `.node-version`. You can also
+install a compatible Node.js version directly or use another version manager.
+If your npm version needs updating, run `npm install --global npm@12.2.1` after
+selecting your Node.js version.
 
 Open [localhost:3000](http://localhost:3000), or the address printed in your
 terminal. Run all workspace commands from the repository root. No API keys,
