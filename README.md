@@ -176,11 +176,16 @@ The application's feedback menu opens the same issue tracker.
 Keep contributions focused and preserve local processing and clear browser
 compatibility errors. Discuss substantial changes in an issue first.
 
-## License status
+## License
 
-A repository-wide license has not been selected yet. Third-party dependencies
-and copied assets retain their own licenses; making this repository public does
-not relicense them. See [the license review](docs/license-review.md) for the
-remaining release decisions. [Third-party notices](THIRD_PARTY_NOTICES.md) record
-the verified PixelBlast source, Lina adaptations, and bundled font licenses.
-Full notices are also served at `/third-party-notices.txt`.
+The project's original code is licensed under the [MIT License](LICENSE).
+Copyright (c) 2026 Thimo Waanders. Copies and substantial portions must retain
+the copyright and license notice.
+
+If this project helps you, a credit or link back to the repository is
+appreciated, but not required.
+
+Third-party code, fonts, media, and trademarks retain their own terms.
+[Third-party notices](THIRD_PARTY_NOTICES.md) record the verified PixelBlast
+source and bundled font license. Full notices for these materials are also
+served at `/third-party-notices.txt`.

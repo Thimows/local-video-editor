@@ -14,24 +14,24 @@ browser sandbox. The practical architecture is a layered local model:
   local project metadata and OPFS working files.
 - Use OPFS for temporary render chunks, generated cache data, thumbnails,
   waveforms, and later export intermediates.
-- Keep source media as local files/handles. Do not copy full source media into
-  IndexedDB or React state.
+- Keep source media as local files/handles. Eligible file blobs may be kept in
+  IndexedDB as a fallback where local file handles cannot be restored. Files larger than the persistence limit remain
+  dependent on the original files and permissions.
 
-## Export direction
+## Current export pipeline
 
-The current WebM export is a browser-native MVP. The longer-term local export
-engine should move to a worker pipeline:
+The editor exports MP4 (H.264/AAC) or WebM (VP9/Opus), subject to the browser's
+available encoders. The implementation in `apps/web/src/lib/editor/render-engine/`
+uses Mediabunny for decoding, encoding, and muxing, Canvas for video composition,
+and Web Audio for audio mixing.
 
-1. File handles / Blob slices as source readers.
-2. Container demuxer for MP4/WebM.
-3. WebCodecs decoders/encoders where supported.
-4. Web Audio or AudioData mixer.
-5. Muxer that writes progressively to OPFS or a user-selected writable file.
-6. Download fallback for browsers without writable file streams.
+Output streams to temporary OPFS files where available, with an in-memory buffer
+fallback. Successful exports become downloadable files and temporary resources
+are cleaned up when no longer needed. Segmented preview proxies are generated
+and cached separately for editor playback. Waveform generation uses a worker.
 
-WebCodecs is the right primitive for modern local media processing, but it does
-not demux or mux containers by itself. A real export engine needs explicit
-demux/mux libraries around it.
+WebCodecs supplies codec primitives, while Mediabunny handles the container
+operations around them. Media processing runs locally in the browser.
 
 ## Sources checked
 

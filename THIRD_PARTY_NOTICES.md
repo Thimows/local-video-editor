@@ -1,7 +1,7 @@
 # Third-party notices
 
-The copied code and font below retain their own license terms. These notices
-are separate from any license selected for the project's own code.
+The copied code and font below retain their own license terms. The project's
+original code is covered by the [MIT License](LICENSE); these third-party materials are covered by the specific terms listed below.
 
 Full copies of the applicable licenses are kept next to the relevant source
 and combined in [the browser-accessible notice file](apps/web/public/third-party-notices.txt).
@@ -22,20 +22,7 @@ added header. The license is taken from the same upstream revision.
 The published terms permit use as part of an application, website, or product.
 They restrict selling, sublicensing, or redistributing the components themselves.
 Keep this notice and the full license when distributing the editor. These files
-are not relicensed under a future license for the editor's own code.
-
-## Lina adaptations
-
-- Copyright (c) 2025 Sameer Singh.
-- License: MIT, preserved in [LICENSE.lina.txt](packages/ui/LICENSE.lina.txt)
-  and in the adapted source files' headers.
-- [Pinned upstream license](https://github.com/SameerJS6/lina/blob/6c1934820003c6289dd603ea9bceb0de066c8489/LICENSE).
-- Covered adaptations: `packages/ui/src/components/ui/scroll-area.tsx` and
-  `packages/ui/src/hooks/use-touch-primary.tsx`.
-
-The original attribution comments are retained. These files adapt Lina's
-scrolling and touch-device detection behavior; they are not represented as
-unmodified copies of upstream files.
+are not relicensed under the editor's MIT license.
 
 ## Geist Pixel
 
@@ -57,5 +44,13 @@ the font retains its own license.
 
 Installed npm dependencies retain their own LICENSE and NOTICE files. This
 index covers the copied source and bundled font above, not every transitive npm
-dependency. See [the license review](docs/license-review.md) for the dependency
-review and distribution considerations.
+dependency. In particular, Mediabunny is MPL-2.0 licensed: preserve its notices
+and provide access to the corresponding covered source when distributing
+browser bundles. Its file-level requirements do not relicense the editor's own
+code. Sharp is Apache-2.0 licensed, and its bundled libvips binaries include
+LGPL-3.0-or-later terms; retain their notices and applicable redistribution
+materials when shipping binaries or containers.
+
+Third-party gameplay imagery in screenshots and browser logos are not covered
+by the editor's MIT license. Their copyright and trademark rights remain with
+their respective owners.

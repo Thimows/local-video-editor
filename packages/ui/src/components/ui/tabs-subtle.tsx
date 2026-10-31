@@ -14,7 +14,7 @@ import {
 } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import { motion, AnimatePresence } from "framer-motion";
-import type { IconComponent } from "@workspace/ui/lib/icon-context";
+import type { IconComponent } from "@workspace/ui/lib/icon";
 import { cn } from "@workspace/ui/lib/utils";
 import { spring } from "@workspace/ui/lib/springs";
 import { fontWeights } from "@workspace/ui/lib/font-weight";

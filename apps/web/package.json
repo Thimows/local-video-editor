@@ -32,6 +32,8 @@
     "@workspace/eslint-config": "*",
     "@workspace/typescript-config": "*",
     "eslint": "^9.39.5",
+    "sharp": "^0.35.5",
     "typescript": "^6.0.3"
-  }
+  },
+  "license": "MIT"
 }

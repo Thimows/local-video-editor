@@ -11,7 +11,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { IconComponent } from "@workspace/ui/lib/icon-context";
+import type { IconComponent } from "@workspace/ui/lib/icon";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@workspace/ui/lib/utils";
 import { fontWeights } from "@workspace/ui/lib/font-weight";

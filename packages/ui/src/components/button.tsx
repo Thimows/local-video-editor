@@ -1,7 +1,7 @@
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
-import type { IconComponent } from "@workspace/ui/lib/icon-context"
+import type { IconComponent } from "@workspace/ui/lib/icon"
 import { cn } from "@workspace/ui/lib/utils"
 
 const buttonVariants = cva(
