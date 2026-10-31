@@ -7,7 +7,7 @@ No account or application backend is required.
 [Try the editor](https://localvideoeditor.com) ·
 [Report a bug or suggest a feature](https://github.com/Thimows/local-video-editor/issues)
 
-![Local Video Editor with a multi-track timeline](apps/web/public/landing/editor-light.webp)
+![Local Video Editor with a multi-track timeline](docs/images/editor-light-rounded.png)
 
 ## Features
 
